@@ -7,8 +7,16 @@ members = [
     "game",
     "game/rusc_database",
     "kson-rodio-sources", "multiplayer-protocol",
+    "ios/gilrs-stub",
 ]
 resolver = "2"
+
+# Lua 5.3's `loslib.c` calls `system()`, which iOS marks unavailable, so the
+# upstream `lua-src` crate cannot build for `aarch64-apple-ios`. This vendored
+# copy defines `LUA_USE_IOS` for the 5.3 tree and stubs `system` out, mirroring
+# what Lua 5.4 does upstream.
+[patch.crates-io]
+lua-src = { path = "ios/lua-src" }
 
 [profile.dev.package."*"]
 opt-level = 3

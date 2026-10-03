@@ -31,8 +31,15 @@ mod touch;
 mod transition;
 mod util;
 mod vg_ui;
+#[cfg(not(target_os = "ios"))]
 mod window;
 mod worker_service;
+
+mod egui_host;
+
+mod gilrs_compat;
+
+mod platform;
 
 use std::{
     path::PathBuf,
@@ -63,7 +70,8 @@ use femtovg as vg;
 
 pub use game_main::ControlMessage;
 
-use gilrs::Gilrs;
+use crate::gilrs_compat::Gilrs;
+#[cfg(not(target_os = "ios"))]
 use glutin_winit::GlWindow;
 use help::ServiceHelper;
 use log::*;
@@ -81,8 +89,10 @@ use td::Viewport;
 use three_d as td;
 
 use di::*;
+#[cfg(not(target_os = "ios"))]
 use glutin::{context::PossiblyCurrentContext, prelude::*};
 pub use log_macro::log_result;
+#[cfg(not(target_os = "ios"))]
 use winit::event::WindowEvent;
 
 pub type InnerRuscMixer = rodio::mixer::Mixer;
@@ -317,6 +327,7 @@ pub const FRAME_ACC_SIZE: usize = 16;
 
 pub struct LuaArena(pub Vec<Rc<Lua>>);
 
+#[cfg(not(target_os = "ios"))]
 struct UscApp {
     state: Option<(
         GameMain,
@@ -336,6 +347,7 @@ struct UscApp {
     async_rt: tokio::runtime::Runtime,
 }
 
+#[cfg(not(target_os = "ios"))]
 struct FrameTracker {
     rendered_frames: u64,
     last_render: Instant,
@@ -343,11 +355,13 @@ struct FrameTracker {
     last_frame_sec: f64,
     accum_sec: f64,
 }
+#[cfg(not(target_os = "ios"))]
 struct UpdateTracker {
     target_time: Instant,
     current_update: Instant,
 }
 
+#[cfg(not(target_os = "ios"))]
 impl UpdateTracker {
     pub const RATE: u64 = 240;
     pub fn set(&mut self) {
@@ -362,6 +376,7 @@ impl UpdateTracker {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl Iterator for UpdateTracker {
     type Item = ();
 
@@ -378,6 +393,7 @@ impl Iterator for UpdateTracker {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl UscApp {
     fn init(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) -> anyhow::Result<()> {
         if self.state.is_some() {
@@ -564,6 +580,7 @@ impl UscApp {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl FrameTracker {
     pub fn new() -> Self {
         Self {
@@ -600,6 +617,7 @@ impl FrameTracker {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 impl winit::application::ApplicationHandler<UscInputEvent> for UscApp {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         self.init(event_loop)
@@ -691,6 +709,7 @@ impl winit::application::ApplicationHandler<UscInputEvent> for UscApp {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 fn get_log_config(level: log::LevelFilter) -> log4rs::Config {
     use log4rs::append::file::FileAppender;
     use log4rs::config::*;
@@ -723,6 +742,7 @@ fn get_log_config(level: log::LevelFilter) -> log4rs::Config {
         .expect("Failed to build log config")
 }
 
+#[cfg(not(target_os = "ios"))]
 pub fn run(eventloop: winit::event_loop::EventLoop<UscInputEvent>) -> anyhow::Result<()> {
     #[cfg(not(target_os = "android"))]
     let _logger_handle =
@@ -780,7 +800,7 @@ pub fn run(eventloop: winit::event_loop::EventLoop<UscInputEvent>) -> anyhow::Re
 
     let _tokio = rt.enter();
 
-    let mut input = gilrs::GilrsBuilder::default()
+    let mut input = crate::gilrs_compat::GilrsBuilder::default()
         .add_included_mappings(false)
         .with_default_filters(false)
         .add_mappings(&GameConfig::get().mappings.join("\n"))
@@ -812,7 +832,7 @@ pub fn run(eventloop: winit::event_loop::EventLoop<UscInputEvent>) -> anyhow::Re
         loop {
             rusc_filter.update();
             use button_codes::*;
-            use gilrs::*;
+            use crate::gilrs_compat::*;
             use winit::event::ElementState::*;
             let e = {
                 if let Some(input) = input.lock().unwrap().as_mut() {
@@ -887,6 +907,7 @@ pub fn run(eventloop: winit::event_loop::EventLoop<UscInputEvent>) -> anyhow::Re
     Ok(())
 }
 
+#[cfg(not(target_os = "ios"))]
 fn export_luals_defs() -> Result<(), anyhow::Error> {
     use std::io::Write;
     let mut path = installer::default_game_dir();
@@ -929,6 +950,7 @@ fn export_luals_defs() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+#[cfg(not(target_os = "ios"))]
 fn main() -> anyhow::Result<()> {
     let eventloop = winit::event_loop::EventLoop::<UscInputEvent>::with_user_event().build()?;
     run(eventloop)

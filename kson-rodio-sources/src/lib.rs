@@ -10,11 +10,11 @@ pub mod mix_source;
 pub mod noise;
 pub mod owned_source;
 pub mod phaser;
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "pitch-shift", not(any(target_os = "android", target_os = "ios"))))]
 pub mod pitch_shift;
-#[cfg(target_os = "android")]
+#[cfg(not(all(feature = "pitch-shift", not(any(target_os = "android", target_os = "ios")))))]
 pub mod pitch_shift_passthrough;
-#[cfg(target_os = "android")]
+#[cfg(not(all(feature = "pitch-shift", not(any(target_os = "android", target_os = "ios")))))]
 pub use pitch_shift_passthrough as pitch_shift;
 
 pub mod re_trigger;

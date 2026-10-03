@@ -1,6 +1,12 @@
 use std::{collections::HashMap, time::SystemTime};
 
-use egui::accesskit::{Point, Rect, Vec2};
+use egui::emath::{Pos2, Rect, Vec2};
+
+/// `Rect` in `emath` is min/max based; this mirrors the `accesskit`
+/// `rect(x0, y0, x1, y1)` constructor the touch grid was written against.
+fn rect(x0: f32, y0: f32, x1: f32, y1: f32) -> Rect {
+    Rect::from_min_max(Pos2::new(x0, y0), Pos2::new(x1, y1))
+}
 use winit::{dpi::PhysicalPosition, event::TouchPhase};
 
 use crate::button_codes::{UscButton, UscInputEvent};
@@ -20,8 +26,8 @@ struct TouchTracker {
 }
 
 impl TouchTracker {
-    fn current_point(&self) -> Point {
-        Point::new(self.current_pos.x, self.current_pos.y)
+    fn current_point(&self) -> Pos2 {
+        Pos2::new(self.current_pos.x as f32, self.current_pos.y as f32)
     }
 
     fn new(pos: PhysicalPosition<f64>) -> Self {
@@ -126,22 +132,22 @@ impl TouchHelper {
 
         button_areas.insert(
             UscButton::Laser(kson::Side::Left, kson::Side::Left),
-            Rect::new(0.0, 0.0, col_width, row_height * 2.0),
+            rect(0.0, 0.0, col_width, row_height * 2.0),
         );
 
         button_areas.insert(
             UscButton::Laser(kson::Side::Left, kson::Side::Right),
-            Rect::new(0.0, row_height * 2.0, col_width, row_height * 4.0),
+            rect(0.0, row_height * 2.0, col_width, row_height * 4.0),
         );
 
         button_areas.insert(
             UscButton::Laser(kson::Side::Right, kson::Side::Left),
-            Rect::new(col_width * 5.0, 0.0, col_width * 6.0, row_height * 2.0),
+            rect(col_width * 5.0, 0.0, col_width * 6.0, row_height * 2.0),
         );
 
         button_areas.insert(
             UscButton::Laser(kson::Side::Right, kson::Side::Right),
-            Rect::new(
+            rect(
                 col_width * 5.0,
                 row_height * 2.0,
                 col_width * 6.0,
@@ -151,21 +157,21 @@ impl TouchHelper {
 
         button_areas.insert(
             UscButton::Back,
-            Rect::new(col_width, 0.0, col_width * 5.0, row_height),
+            rect(col_width, 0.0, col_width * 5.0, row_height),
         );
 
         button_areas.insert(
             UscButton::Start,
-            Rect::new(col_width, row_height, col_width * 4.0, row_height * 2.0),
+            rect(col_width, row_height, col_width * 4.0, row_height * 2.0),
         );
 
         for i in 0..4usize {
             button_areas.insert(
                 UscButton::BT(i.try_into().unwrap()),
-                Rect::new(
-                    col_width + col_width * i as f64,
+                rect(
+                    col_width + col_width * i as f32,
                     row_height * 2.0,
-                    col_width * 2.0 + col_width * i as f64,
+                    col_width * 2.0 + col_width * i as f32,
                     row_height * 3.0,
                 ),
             );
@@ -173,7 +179,7 @@ impl TouchHelper {
 
         button_areas.insert(
             UscButton::FX(kson::Side::Left),
-            Rect::new(
+            rect(
                 col_width,
                 row_height * 3.0,
                 col_width * 3.0,
@@ -182,7 +188,7 @@ impl TouchHelper {
         );
         button_areas.insert(
             UscButton::FX(kson::Side::Right),
-            Rect::new(
+            rect(
                 col_width * 3.0,
                 row_height * 3.0,
                 col_width * 5.0,

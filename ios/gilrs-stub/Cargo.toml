@@ -1,0 +1,13 @@
+[package]
+name = "gilrs-ios-stub"
+version = "0.11.2"
+edition = "2021"
+description = "iOS stub for gilrs: the real crate depends on IOKit/udev which are unavailable on iOS. Gamepad support is disabled, but the type surface is preserved so the game crate compiles unchanged."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["serde"] }
+
+[lib]
+name = "gilrs_ios_stub"
+path = "src/lib.rs"

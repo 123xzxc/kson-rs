@@ -1,0 +1,86 @@
+name: iOS / iPadOS
+
+on:
+  push:
+    branches:
+      - master
+      - 'feat/**'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-ios-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-ios-cargo-
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Build Rust static library
+        # `embed-assets` bakes the default skin and fonts into the binary so the
+        # app works without a separate resource copy; `--no-default-features`
+        # keeps SoundTouch (desktop-only) out of the iOS build.
+        run: |
+          cargo build --release \
+            --target aarch64-apple-ios \
+            -p rusc \
+            --lib \
+            --features embed-assets \
+            --no-default-features
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Archive (unsigned)
+        working-directory: ios
+        run: |
+          xcodebuild archive \
+            -project KsonGame.xcodeproj \
+            -scheme KsonGame \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/KsonGame.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            -skipPackagePluginValidation
+
+      - name: Package .ipa
+        run: |
+          APP="$RUNNER_TEMP/KsonGame.xcarchive/Products/Applications/USC.app"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
+          cd "$RUNNER_TEMP/ipa"
+          zip -qry "$GITHUB_WORKSPACE/USC-unsigned.ipa" Payload
+
+      - name: Verify static library linked
+        run: |
+          APP="$RUNNER_TEMP/KsonGame.xcarchive/Products/Applications/USC.app"
+          test -f "$APP/USC" || { echo "missing executable"; exit 1; }
+          nm -gU "$APP/USC" | grep -q kson_ios_init || {
+            echo "Rust entry points missing from the binary"
+            exit 1
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: USC-ios-unsigned
+          path: USC-unsigned.ipa

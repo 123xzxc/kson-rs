@@ -1,3 +1,10 @@
+//! Desktop window/surface creation.
+//!
+//! This module builds the glutin context and swapchain that the desktop render
+//! loop draws into. iOS never creates a winit window (UIKit owns the run loop,
+//! see `platform::app`), so the whole module is desktop-only.
+#![cfg(not(target_os = "ios"))]
+
 use std::num::NonZeroU32;
 
 use anyhow::anyhow;
@@ -15,13 +22,7 @@ use winit::{self, event_loop::ActiveEventLoop, raw_window_handle::HasWindowHandl
 use winit::{dpi::PhysicalPosition, monitor::MonitorHandle};
 
 use crate::config::GameConfig;
-
-pub fn find_monitor(
-    mut monitors: impl Iterator<Item = MonitorHandle>,
-    pos: PhysicalPosition<i32>,
-) -> Option<MonitorHandle> {
-    monitors.find(|x| x.position() == pos)
-}
+use crate::platform::window::find_monitor;
 
 type WindowCreation = (
     winit::window::Window,

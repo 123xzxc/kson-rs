@@ -1,0 +1,11 @@
+# Vendored C sources must keep their original line endings: MSVC/Clang read
+# `#include` and string literals verbatim, and CRLF inside `lua.h`'s version
+# string would change the reported Lua version.
+ios/lua-src/** -text
+
+# Normalise everything else to LF on checkout so builds are reproducible
+# regardless of the developer's platform.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary

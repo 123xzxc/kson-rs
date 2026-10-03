@@ -123,14 +123,27 @@ async fn handle_connection(
 }
 
 impl CompanionServer {
+    /// iOS build: there is no winit event loop to deliver follower input to, so
+    /// the listener task is a no-op. The struct is still registered so scenes
+    /// can publish state without platform checks.
+    #[cfg(target_os = "ios")]
+    pub fn new_ios() -> Self {
+        let (event_bus, _) = tokio::sync::broadcast::channel(8);
+        Self {
+            event_bus,
+            active: Arc::new(AtomicBool::new(false)),
+            _listener: tokio::task::spawn(async {}),
+        }
+    }
+
     pub fn new(event_proxy: winit::event_loop::EventLoopProxy<UscInputEvent>) -> Self {
         let (event_bus, _) = tokio::sync::broadcast::channel(8);
         let client_bus: tokio::sync::broadcast::Sender<GameState> = event_bus.clone();
 
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let _listener = start_listener(event_proxy, client_bus);
 
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         let _listener = tokio::task::spawn(async {});
 
         Self {

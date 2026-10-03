@@ -1,14 +1,14 @@
 use std::{collections::HashMap, ffi::CString, time::SystemTime};
 
 use egui::Ui;
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use hidlights::{DeviceInfo, Report, DeviceHandle};
 use itertools::Itertools;
 use log::warn;
 
 use crate::lighting::{LightingTarget, MappedTarget};
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 type DeviceHandle = ();
 
 #[derive(Default)]

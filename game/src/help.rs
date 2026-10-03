@@ -8,7 +8,7 @@ use anyhow::anyhow;
 use di::{transient_factory, ServiceCollection};
 use femtovg::rgb::{ComponentBytes, ComponentSlice};
 use itertools::Itertools;
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use rfd::AsyncFileDialog;
 use winit::event::ElementState;
 
@@ -57,10 +57,10 @@ impl ServiceHelper for ServiceCollection {
         }))
     }
 }
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub struct AsyncPicker(rfd::AsyncFileDialog, bool);
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[allow(unused)]
 impl AsyncPicker {
     pub fn new() -> Self {

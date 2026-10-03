@@ -1,0 +1,306 @@
+//! iOS application entry point.
+//!
+//! UIKit owns the run loop, so instead of winit's `EventLoop` the Objective-C
+//! layer calls into these exports: `kson_ios_init` once, then `kson_ios_frame`
+//! on every `CADisplayLink` tick. Touch events arrive through
+//! [`crate::platform::input`].
+
+use std::ffi::{c_char, c_void, CStr};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
+
+use anyhow::Result;
+use di::*;
+use log::*;
+use rodio::{cpal::BufferSize, nz, source::Source};
+
+use crate::async_service::AsyncService;
+use crate::companion_interface::CompanionServer;
+use crate::config::{Args, GameConfig};
+use crate::egui_host::IosEgui;
+use crate::game_main::GameMain;
+use crate::help::ServiceHelper;
+use crate::input_state::InputState;
+use crate::installer;
+use crate::lighting::LightingService;
+use crate::lua_service::LuaProvider;
+use crate::multiplayer::MultiplayerService;
+use crate::platform::input::IosTouchState;
+use crate::platform::paths;
+use crate::platform::render::RenderContext;
+use crate::platform::time::FrameTracker;
+use crate::song_provider;
+use crate::songselect::{SongProviderSelection, SongSelect, SongSelectScene};
+use crate::vg_ui::Vgfx;
+use crate::{game_data, FrameInput, LuaArena, Scenes};
+
+pub struct IosApp {
+    game: GameMain,
+    services: ServiceProvider,
+    render: RenderContext,
+    touch: IosTouchState,
+    frame_tracker: FrameTracker,
+    width: f64,
+    height: f64,
+    scale: f32,
+    // Held for the lifetime of the app: dropping either stops audio or the
+    // async runtime that song loading and downloads run on.
+    _sink: rodio::MixerDeviceSink,
+    _runtime: tokio::runtime::Runtime,
+}
+
+impl IosApp {
+    fn new(
+        render: RenderContext,
+        width: f64,
+        height: f64,
+        scale: f32,
+        runtime: tokio::runtime::Runtime,
+    ) -> Result<Self> {
+        let (mixer, mixer_source) = rodio::mixer::mixer(nz!(2), nz!(44100));
+        mixer.add(rodio::source::Zero::new(nz!(2), nz!(44100)));
+        let sink = rodio::DeviceSinkBuilder::from_default_device()?
+            .with_buffer_size(BufferSize::Fixed(512))
+            .open_stream()?;
+        sink.mixer().add(
+            mixer_source
+                .amplify(GameConfig::get().master_volume)
+                .periodic_access(std::time::Duration::from_millis(100), |inner| {
+                    inner.set_log_factor(GameConfig::get().master_volume);
+                }),
+        );
+        let td_context = render.three_d_context()?;
+        let canvas = {
+            use femtovg::renderer::OpenGl;
+            // femtovg (like glow) hands the loader `&CStr`, and the iOS
+            // `eagl_get_proc_address` shim takes a raw `*const c_char`.
+            let renderer = unsafe {
+                OpenGl::new_from_function_cstr(|s| {
+                    crate::platform::render::get_proc_address_cstr(render.eagl_ptr(), s) as *const _
+                })
+            }
+            .map_err(|e| anyhow::anyhow!("femtovg renderer init failed: {e}"))?;
+            let mut canvas = femtovg::Canvas::new(renderer)
+                .map_err(|e| anyhow::anyhow!("canvas init failed: {e}"))?;
+            canvas.set_size(render.size().0, render.size().1, scale);
+            Arc::new(Mutex::new(canvas))
+        };
+
+        let services = ServiceCollection::new()
+            .add(AsyncService::singleton().as_mut())
+            .add(MultiplayerService::singleton().as_mut())
+            .add_worker::<AsyncService>()
+            .add(existing_as_self(mixer))
+            .add(existing_as_self(canvas))
+            .add(existing_as_self(td_context))
+            .add(singleton_factory(|_| {
+                RefMut::new(
+                    tokio::runtime::Handle::current()
+                        .block_on(song_provider::FileSongProvider::new())
+                        .into(),
+                )
+            }))
+            .add(singleton_factory(|x| {
+                RefMut::new(song_provider::NauticaSongProvider::new(x.get_required_mut()).into())
+            }))
+            .add(transient_factory::<RwLock<dyn song_provider::SongProvider>, _>(
+                |sp| sp.get_required_mut::<song_provider::NauticaSongProvider>(),
+            ))
+            .add(transient_factory::<RwLock<dyn song_provider::ScoreProvider>, _>(
+                |sp| sp.get_required_mut::<song_provider::FileSongProvider>(),
+            ))
+            .add_worker::<song_provider::FileSongProvider>()
+            .add_worker::<song_provider::NauticaSongProvider>()
+            .add(existing_as_self(RwLock::new(CompanionServer::new_ios())))
+            .add_worker::<CompanionServer>()
+            .add(Vgfx::singleton().as_mut())
+            .add(singleton_factory(|_| RefMut::new(LuaArena(Vec::new()).into())))
+            .add(singleton_factory(|_| Arc::new(InputState::dummy())))
+            .add(game_data::GameData::singleton().as_mut())
+            .add(LuaProvider::scoped())
+            .add(LightingService::singleton().as_mut())
+            .build_provider()
+            .expect("Failed to build service provider");
+
+        services
+            .get_required_mut::<LightingService>()
+            .write()
+            .unwrap()
+            .restart();
+
+        let mut scenes = Scenes::new();
+        if GameConfig::get().args.chart.is_none() {
+            let songsel = Box::new(SongSelectScene::new(
+                Box::new(SongSelect::new(SongProviderSelection::Nautica)),
+                services.create_scope(),
+            ));
+            scenes.loaded.push(songsel);
+        }
+
+        let game = GameMain::new(
+            scenes,
+            femtovg::Paint::color(femtovg::Color::white()),
+            IosEgui::default(),
+            GameConfig::get().args.debug,
+            services.create_scope(),
+        );
+
+        Ok(Self {
+            game,
+            services,
+            render,
+            touch: IosTouchState::new(width, height),
+            frame_tracker: FrameTracker::new(),
+            width,
+            height,
+            scale,
+            _sink: sink,
+            _runtime: runtime,
+        })
+    }
+
+    pub fn resize(&mut self, width: f64, height: f64, scale: f32) {
+        self.width = width;
+        self.height = height;
+        self.scale = scale;
+        self.render
+            .resize((width * scale as f64) as u32, (height * scale as f64) as u32);
+        self.touch.resize(width, height);
+    }
+
+    pub fn frame(&mut self, elapsed_ms: f64) {
+        self.render.bind_framebuffer();
+
+        let frame_input = FrameInput {
+            events: vec![],
+            elapsed_time: elapsed_ms,
+            accumulated_time: self.frame_tracker.accumulated_time_ms(),
+            viewport: three_d::Viewport {
+                x: 0,
+                y: 0,
+                width: self.render.size().0,
+                height: self.render.size().1,
+            },
+            window_width: self.width as u32,
+            window_height: self.height as u32,
+            device_pixel_ratio: self.scale,
+            first_frame: self.frame_tracker.frames() == 0,
+            context: self
+                .render
+                .three_d_context()
+                .expect("Failed to build three-d context"),
+        };
+
+        // Scenes are advanced by the same fixed-step loop the desktop uses.
+        self.game.update();
+        let _ = self.frame_tracker.tick();
+        self.frame_tracker.advance();
+        let _exit = self.game.render_ios(frame_input, &mut self.render);
+    }
+
+    pub fn on_touch(&mut self, id: u64, x: f64, y: f64, phase: i32) {
+        let phase = crate::platform::input::TouchPhase::from_raw(phase);
+        for event in self.touch.update(id, x, y, phase) {
+            self.game.handle_input_event(event);
+        }
+    }
+}
+
+/// Xcode-facing entry point.
+///
+/// # Safety
+/// All pointers must be valid for the duration of the call. `eagl_context`
+/// must be current on the calling thread.
+#[no_mangle]
+pub unsafe extern "C" fn kson_ios_init(
+    container_path: *const c_char,
+    bundle_path: *const c_char,
+    eagl_context: *mut c_void,
+    framebuffer: u32,
+    width: u32,
+    height: u32,
+    scale: f32,
+) -> bool {
+    android_logger::init_once(
+        android_logger::Config::default().with_max_level(log::LevelFilter::Info),
+    );
+
+    let container = CStr::from_ptr(container_path).to_string_lossy().into_owned();
+    let bundle = CStr::from_ptr(bundle_path).to_string_lossy().into_owned();
+    paths::set_container(PathBuf::from(&container));
+    paths::set_bundle_resource_dir(PathBuf::from(&bundle));
+
+    if let Err(e) = crate::platform::paths::bootstrap_game_dir() {
+        warn!("Failed to install game assets: {e}");
+    }
+
+    let mut config_path = installer::default_game_dir();
+    config_path.push("Main.cfg");
+    GameConfig::init(config_path, Args::default());
+
+    let render = match RenderContext::new(eagl_context, framebuffer, width, height, scale) {
+        Ok(r) => r,
+        Err(e) => {
+            error!("Render init failed: {e}");
+            return false;
+        }
+    };
+
+    // Song loading and downloads use `Handle::current()`, so the runtime must
+    // exist (and be entered) before services are constructed.
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            error!("Failed to start async runtime: {e}");
+            return false;
+        }
+    };
+    let _guard = runtime.enter();
+    // The game thread keeps running after this function returns, so the
+    // entered-runtime guard must outlive it: `Handle::current()` is used from
+    // worker services on every frame.
+    std::mem::forget(_guard);
+
+    match IosApp::new(render, width as f64, height as f64, scale, runtime) {
+        Ok(app) => {
+            APP = Some(app);
+            true
+        }
+        Err(e) => {
+            error!("App init failed: {e}");
+            false
+        }
+    }
+}
+
+static mut APP: Option<IosApp> = None;
+
+unsafe fn app() -> Option<&'static mut IosApp> {
+    (&mut *std::ptr::addr_of_mut!(APP)).as_mut()
+}
+
+/// # Safety
+/// `elapsed_ms` is the time since the previous frame.
+#[no_mangle]
+pub unsafe extern "C" fn kson_ios_frame(elapsed_ms: f64) {
+    if let Some(app) = app() {
+        app.frame(elapsed_ms);
+    }
+}
+
+/// # Safety
+/// `w`/`h` are in logical points.
+#[no_mangle]
+pub unsafe extern "C" fn kson_ios_resize(w: f64, h: f64, scale: f32) {
+    if let Some(app) = app() {
+        app.resize(w, h, scale);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kson_ios_touch(id: u64, x: f64, y: f64, phase: i32) {
+    if let Some(app) = app() {
+        app.on_touch(id, x, y, phase);
+    }
+}

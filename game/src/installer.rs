@@ -23,7 +23,21 @@ pub fn default_game_dir() -> PathBuf {
     game_dir
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "ios")]
+pub fn default_game_dir() -> PathBuf {
+    if let Some(p) = GAME_DIR_OVERRIDE.get().cloned() {
+        p
+    } else {
+        // Set by `ios_main` from `NSHomeDirectory()`; this fallback only
+        // triggers if the game is launched through a path that skips it.
+        let mut game_dir = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()));
+        game_dir.push("Documents");
+        game_dir.push("USC");
+        game_dir
+    }
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "ios")))]
 pub fn default_game_dir() -> PathBuf {
     if let Some(p) = GAME_DIR_OVERRIDE.get().cloned() {
         p
@@ -42,7 +56,7 @@ pub fn default_game_dir() -> PathBuf {
 pub static GAME_DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 pub static INSTALL_DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 
-#[cfg(any(target_os = "android", feature = "embed-assets"))]
+#[cfg(any(target_os = "android", target_os = "ios", feature = "embed-assets"))]
 pub fn init_game_dir(game_dir: impl AsRef<Path>) -> anyhow::Result<()> {
     use include_dir::*;
     static SKIN_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/skins");
@@ -60,6 +74,7 @@ pub fn init_game_dir(game_dir: impl AsRef<Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "ios"))]
 fn is_install_dir(dir: impl AsRef<Path>) -> Option<PathBuf> {
     let dir = dir.as_ref();
     let font_dir = dir.join("fonts");
@@ -71,7 +86,7 @@ fn is_install_dir(dir: impl AsRef<Path>) -> Option<PathBuf> {
     }
 }
 
-#[cfg(not(any(target_os = "android", feature = "embed-assets")))]
+#[cfg(not(any(target_os = "android", target_os = "ios", feature = "embed-assets")))]
 pub fn init_game_dir(game_dir: impl AsRef<Path>) -> anyhow::Result<()> {
     #[cfg(feature = "portable")]
     {
@@ -164,6 +179,14 @@ pub fn init_game_dir(game_dir: impl AsRef<Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "ios")]
+pub fn project_dirs() -> Option<directories::ProjectDirs> {
+    // The `directories` crate has no useful notion of app support dirs on iOS;
+    // callers fall back to `<game_dir>/cache`.
+    None
+}
+
+#[cfg(not(target_os = "ios"))]
 pub fn project_dirs() -> Option<directories::ProjectDirs> {
     directories::ProjectDirs::from("", "Drewol", "USC")
 }

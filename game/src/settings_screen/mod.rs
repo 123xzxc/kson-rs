@@ -1,5 +1,5 @@
 mod controller_binding;
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod lighting;
 pub mod skin_select;
 
@@ -8,7 +8,7 @@ use std::{collections::HashMap, path::PathBuf, sync::mpsc::Sender, time::Duratio
 use controller_binding::KeyboardBindingUi;
 use di::ServiceProvider;
 use egui::{CollapsingResponse, InnerResponse, RichText, Separator, Slider, TextEdit, Ui};
-use gilrs::GamepadId;
+use crate::gilrs_compat::GamepadId;
 use itertools::Itertools;
 use skin_select::SkinMeta;
 use winit::{
@@ -16,7 +16,7 @@ use winit::{
     monitor::MonitorHandle,
 };
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::help::AsyncPicker;
 use crate::{
     config::{Fullscreen, GameConfig, Keybinds, ScoreDisplayMode, ScoreScreenshot},
@@ -42,7 +42,7 @@ pub struct SettingsScreen {
     primary_monitor: Option<MonitorHandle>,
     tx: Sender<ControlMessage>,
     skins: Vec<(SkinMeta, PathBuf)>,
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     lighting: self::lighting::LightingConfig,
 }
 
@@ -51,6 +51,19 @@ impl SettingsScreen {
         services: ServiceProvider,
         tx: Sender<ControlMessage>,
         window: &winit::window::Window,
+    ) -> Self {
+        let monitors = window.available_monitors().collect_vec();
+        let primary_monitor = window.current_monitor();
+        Self::new_with_monitors(services, tx, monitors, primary_monitor)
+    }
+
+    /// Constructs the settings screen without a winit window. Used on iOS,
+    /// where there are no interchangeable monitors.
+    pub fn new_with_monitors(
+        services: ServiceProvider,
+        tx: Sender<ControlMessage>,
+        monitors: Vec<MonitorHandle>,
+        primary_monitor: Option<MonitorHandle>,
     ) -> Self {
         let input_state = InputState::clone(&services.get_required());
         input_state.set_text_input_active(true);
@@ -67,9 +80,6 @@ impl SettingsScreen {
                 })
                 .unwrap_or_default()
         };
-
-        let monitors = window.available_monitors().collect_vec();
-        let primary_monitor = window.current_monitor();
 
         services
             .get_required_mut::<LightingService>()
@@ -117,7 +127,7 @@ impl SettingsScreen {
             tx,
             skins,
             key_binding_ui: KeyboardBindingUi::new(),
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             lighting: self::lighting::LightingConfig::new(),
         }
     }
@@ -200,13 +210,13 @@ impl Scene for SettingsScreen {
                 self.close = true;
             }
 
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", target_os = "ios"))]
             ui.add_space(50.0);
         });
 
         egui::panel::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                #[cfg(target_os = "android")]
+                #[cfg(any(target_os = "android", target_os = "ios"))]
                 ui.add_space(50.0);
 
                 settings_section("Input", ui, |ui| {
@@ -338,7 +348,7 @@ impl Scene for SettingsScreen {
 
                     ui.label("Songs path");
 
-                    #[cfg(not(target_os = "android"))]
+                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
                     AsyncPicker::new()
                         .folder()
                         .show("song_folder".into(), &mut songs_path, ui);
@@ -398,7 +408,7 @@ impl Scene for SettingsScreen {
 
                     ui.label("Screenshots path");
 
-                    #[cfg(not(target_os = "android"))]
+                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
                     AsyncPicker::new().folder().show(
                         "screenshot_folder".into(),
                         &mut screenshot_path,
@@ -436,7 +446,7 @@ impl Scene for SettingsScreen {
                     ui.end_row();
                 });
 
-                #[cfg(not(target_os = "android"))]
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
                 settings_section(
                     "Controller Lights",
                     ui,

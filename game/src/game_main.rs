@@ -11,7 +11,6 @@ use std::{
 
 use anyhow::Context;
 use di::{RefMut, ServiceProvider};
-use egui_glow::EguiGlow;
 use femtovg::Paint;
 use log::info;
 use winit::{
@@ -21,11 +20,15 @@ use winit::{
     window::{Window, WindowId},
 };
 
+#[cfg(not(target_os = "ios"))]
 use glutin::{
     context::PossiblyCurrentContext,
     surface::{GlSurface, SwapInterval},
 };
 use puffin::{profile_function, profile_scope};
+
+use crate::egui_host::{EguiHost, EguiIntegration};
+use crate::platform::window::{find_monitor, PlatformWindow};
 
 use crate::{
     button_codes::UscButton, ir::InternetRanking, lighting::LightingService,
@@ -54,7 +57,6 @@ use crate::{
     transition::Transition,
     util::lua_address,
     vg_ui::Vgfx,
-    window::find_monitor,
     worker_service::WorkerService,
     RuscMixer, Scenes, FRAME_ACC_SIZE,
 };
@@ -121,7 +123,7 @@ pub struct GameMain {
     game_data: Arc<RwLock<GameData>>,
     vgfx: Arc<RwLock<Vgfx>>,
     frame_count: u32,
-    gui: EguiGlow,
+    gui: EguiIntegration,
     show_debug_ui: bool,
     mousex: f64,
     mousey: f64,
@@ -151,7 +153,7 @@ impl GameMain {
     pub fn new(
         scenes: Scenes,
         fps_paint: Paint,
-        gui: EguiGlow,
+        gui: EguiIntegration,
         show_debug_ui: bool,
         service_provider: ServiceProvider,
     ) -> Self {
@@ -186,7 +188,7 @@ impl GameMain {
             companion_update: 0,
             frame_end: SystemTime::UNIX_EPOCH,
             frame_duration: get_frame_duration(&GameConfig::get()),
-            touch_tracker: TouchHelper::new(egui::accesskit::Vec2::new(500.0, 500.0)),
+            touch_tracker: TouchHelper::new(egui::Vec2::new(500.0, 500.0)),
             mouse_knobs: GameConfig::get().mouse_knobs,
             mouse_locked: false,
         }
@@ -258,6 +260,7 @@ impl GameMain {
             });
         }
     }
+    #[cfg(not(target_os = "ios"))]
     pub fn render(
         &mut self,
         frame_input: FrameInput,
@@ -579,6 +582,7 @@ impl GameMain {
 
         exit
     }
+    #[cfg(not(target_os = "ios"))]
     pub fn handle(&mut self, window: &Window, event: &winit::event::Event<UscInputEvent>) {
         use winit::event::*;
         if let Event::WindowEvent {
@@ -630,9 +634,9 @@ impl GameMain {
                 if let Fullscreen::Windowed { size, .. } = windowed {
                     *size = *physical_size;
                 }
-                self.touch_tracker = TouchHelper::new(egui::accesskit::Vec2::new(
-                    physical_size.width as f64,
-                    physical_size.height as f64,
+                self.touch_tracker = TouchHelper::new(egui::Vec2::new(
+                    physical_size.width as f32,
+                    physical_size.height as f32,
                 ));
 
                 self.reset_viewport_size(physical_size)
@@ -1012,6 +1016,251 @@ impl GameMain {
 
                 window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(current_monitor)))
             }
+        }
+    }
+
+    /// iOS render entry point.
+    ///
+    /// Mirrors [`GameMain::render`] but without winit/glutin/egui_glow, whose
+    /// window integration does not exist on iOS. Input and egui are driven by
+    /// the Objective-C layer instead.
+    #[cfg(target_os = "ios")]
+    pub fn render_ios(
+        &mut self,
+        frame_input: FrameInput,
+        render: &mut crate::platform::render::RenderContext,
+    ) -> bool {
+        let GameMain {
+            lua_arena,
+            scenes,
+            control_tx,
+            control_rx,
+            knob_state,
+            frame_times,
+            fps_paint,
+            transition_lua,
+            transition_song_lua,
+            frame_count,
+            game_data,
+            vgfx,
+            show_debug_ui,
+            frame_time_index,
+            mousex,
+            mousey,
+            mixer,
+            service_provider,
+            lua_provider,
+            show_fps,
+            mouse_knobs,
+            frame_end: _,
+            frame_duration: _,
+            lighting_service,
+            gui,
+            ..
+        } = self;
+
+        knob_state.zero_deltas();
+
+        for lua in lua_arena.read().expect("Lock error").0.iter() {
+            lua.set_app_data(frame_input.clone());
+        }
+
+        if frame_input.first_frame {
+            frame_input.screen().clear(td::ClearState::default());
+            let vgfx = vgfx.write().expect("Lock error");
+            let mut canvas = vgfx.canvas.lock().expect("Lock error");
+            canvas.reset();
+            canvas.set_size(frame_input.viewport.width, frame_input.viewport.height, 1.0);
+            _ = canvas.fill_text(
+                10.0,
+                10.0,
+                "Loading...",
+                &vg::Paint::color(vg::Color::white())
+                    .with_font_size(32.0)
+                    .with_text_baseline(vg::Baseline::Top),
+            );
+            canvas.flush();
+            *frame_count += 1;
+            render.present();
+            return false;
+        }
+
+        if *frame_count == 1 {
+            lua_provider
+                .register_libraries(transition_lua.clone(), "transition.lua")
+                .expect("Failed to register lua libraries");
+            lua_provider
+                .register_libraries(transition_song_lua.clone(), "songtransition.lua")
+                .expect("Failed to register lua libraries");
+            *frame_count += 1;
+        }
+
+        {
+            let mut vgfx = vgfx.write().expect("Lock error");
+            vgfx.clear_tint();
+        }
+
+        while let Ok(control_msg) = control_rx.try_recv() {
+            match control_msg {
+                ControlMessage::None => {}
+                ControlMessage::SongSelect(selection) => {
+                    scenes.suspend_top();
+                    if let Ok(_arena) = lua_arena.read() {
+                        scenes.transition = Transition::new(
+                            transition_lua.clone(),
+                            ControlMessage::SongSelect(selection),
+                            vgfx.clone(),
+                            frame_input.viewport,
+                            service_provider.create_scope(),
+                        )
+                        .ok();
+                    }
+                }
+                ControlMessage::MainMenu(b) => match b {
+                    MainMenuButton::Start => {
+                        scenes.suspend_top();
+                        if let Ok(_arena) = lua_arena.read() {
+                            scenes.transition = Transition::new(
+                                transition_lua.clone(),
+                                ControlMessage::MainMenu(MainMenuButton::Start),
+                                vgfx.clone(),
+                                frame_input.viewport,
+                                service_provider.create_scope(),
+                            )
+                            .ok();
+                        }
+                    }
+                    MainMenuButton::Multiplayer => {
+                        scenes.suspend_top();
+                        scenes.transition = Transition::new(
+                            transition_lua.clone(),
+                            ControlMessage::MainMenu(MainMenuButton::Multiplayer),
+                            vgfx.clone(),
+                            frame_input.viewport,
+                            service_provider.create_scope(),
+                        )
+                        .ok();
+                    }
+                    MainMenuButton::Downloads => {}
+                    MainMenuButton::Exit => scenes.clear(),
+                    MainMenuButton::Options => scenes.loaded.push(Box::new(SettingsScreen::new_with_monitors(
+                        service_provider.create_scope(),
+                        control_tx.clone(),
+                        Vec::new(),
+                        None,
+                    ))),
+                    _ => {}
+                },
+                ControlMessage::Song { diff, loader, song, autoplay } => {
+                    if let Ok(_arena) = lua_arena.read() {
+                        scenes.transition = Transition::new(
+                            transition_song_lua.clone(),
+                            ControlMessage::Song { diff, loader, song, autoplay },
+                            vgfx.clone(),
+                            frame_input.viewport,
+                            service_provider.create_scope(),
+                        )
+                        .ok();
+                    }
+                }
+                ControlMessage::Result {
+                    song,
+                    diff_idx,
+                    score,
+                    gauge,
+                    hit_ratings,
+                    hit_window,
+                    autoplay,
+                    max_combo,
+                    duration,
+                    manual_exit,
+                    hash,
+                } => {
+                    if let Ok(_arena) = lua_arena.read() {
+                        scenes.transition = Transition::new(
+                            transition_lua.clone(),
+                            ControlMessage::Result {
+                                song,
+                                diff_idx,
+                                score,
+                                gauge,
+                                hit_ratings,
+                                hit_window,
+                                autoplay,
+                                max_combo,
+                                duration,
+                                manual_exit,
+                                hash,
+                            },
+                            vgfx.clone(),
+                            frame_input.viewport,
+                            service_provider.create_scope(),
+                        )
+                        .ok();
+                    }
+                }
+                ControlMessage::ApplySettings => {
+                    let settings = GameConfig::get();
+                    *show_fps = settings.graphics.show_fps;
+                    *mouse_knobs = settings.mouse_knobs;
+                    lighting_service.write().unwrap().restart();
+                    settings.save();
+                }
+                ControlMessage::ReloadScripts => {
+                    info!("Reloading scripts");
+                    scenes.for_each_active_mut(|s| {
+                        s.reload_scripts()
+                            .with_context(|| s.name().to_string())
+                            .warn("Reloading scripts failed");
+                    });
+                }
+            }
+        }
+
+        frame_times[*frame_time_index] = frame_input.elapsed_time;
+        *frame_time_index = (*frame_time_index + 1) % FRAME_ACC_SIZE;
+        let fps = 1000_f64 / (frame_times.iter().sum::<f64>() / FRAME_ACC_SIZE as f64);
+
+        Self::update_game_data_and_clear(
+            game_data,
+            *mousex,
+            *mousey,
+            &frame_input,
+            self.input_state.clone(),
+            *mouse_knobs,
+        );
+
+        scenes.render(frame_input.clone(), vgfx);
+        Self::render_overlays(vgfx, &frame_input, fps, fps_paint, *show_fps);
+        Self::run_lua_gc(lua_arena, &mut vgfx.write().expect("Lock error"));
+
+        if *show_debug_ui {
+            let ctx = gui.ctx().clone();
+            Self::debug_ui(&ctx, scenes, vgfx);
+        }
+
+        let exit = scenes.is_empty();
+        if exit {
+            GameConfig::get().save();
+        }
+
+        render.present();
+        exit
+    }
+
+    /// iOS input entry point, fed by the UIKit touch handlers.
+    #[cfg(target_os = "ios")]
+    pub fn handle_input_event(&mut self, e: crate::button_codes::UscInputEvent) {
+        self.input_state.update(&e);
+        match e {
+            UscInputEvent::Button(b, winit::event::ElementState::Pressed, time) => self
+                .scenes
+                .for_each_active_mut(|x| x.on_button_pressed(b, time)),
+            UscInputEvent::Button(b, winit::event::ElementState::Released, time) => self
+                .scenes
+                .for_each_active_mut(|x| x.on_button_released(b, time)),
+            UscInputEvent::Laser(ls, _) => self.knob_state = ls,
+            UscInputEvent::ClientEvent(_) => {}
         }
     }
 }

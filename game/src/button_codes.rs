@@ -7,7 +7,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use gilrs::{
+use crate::gilrs_compat::{
     ev::{filter::FilterFn, Code},
     Axis, Button, Event,
 };
@@ -65,7 +65,7 @@ impl RuscFilter {
 }
 
 impl FilterFn for RuscFilter {
-    fn filter(&self, ev: Option<gilrs::Event>, gilrs: &mut gilrs::Gilrs) -> Option<gilrs::Event> {
+    fn filter(&self, ev: Option<crate::gilrs_compat::Event>, gilrs: &mut crate::gilrs_compat::Gilrs) -> Option<crate::gilrs_compat::Event> {
         match ev {
             Some(mut ev) => {
                 let source = gilrs.gamepad(ev.id).mapping_source();
@@ -75,59 +75,59 @@ impl FilterFn for RuscFilter {
                     ev.time.sub_assign(self.offset);
                 }
                 match source {
-                    gilrs::MappingSource::SdlMappings => Some(ev),
+                    crate::gilrs_compat::MappingSource::SdlMappings => Some(ev),
                     _ => {
                         // apply default mapping
                         // a:b1,b:b2,x:b4,y:b3,start:b0,leftshoulder:b5,rightshoulder:b6,leftx:a0,rightx:a1
                         // TODO: every match arm returns Some(ev), can probably be simplified
                         match ev.event {
-                            gilrs::EventType::ButtonPressed(_, code) => {
+                            crate::gilrs_compat::EventType::ButtonPressed(_, code) => {
                                 ev.event = self
                                     .button_map
                                     .get(&code.into_u32())
-                                    .map(|b| gilrs::EventType::ButtonPressed(*b, code))
+                                    .map(|b| crate::gilrs_compat::EventType::ButtonPressed(*b, code))
                                     .unwrap_or(ev.event);
 
                                 Some(ev)
                             }
-                            gilrs::EventType::ButtonRepeated(_, code) => {
+                            crate::gilrs_compat::EventType::ButtonRepeated(_, code) => {
                                 ev.event = self
                                     .button_map
                                     .get(&code.into_u32())
-                                    .map(|b| gilrs::EventType::ButtonRepeated(*b, code))
+                                    .map(|b| crate::gilrs_compat::EventType::ButtonRepeated(*b, code))
                                     .unwrap_or(ev.event);
                                 Some(ev)
                             }
-                            gilrs::EventType::ButtonReleased(_, code) => {
+                            crate::gilrs_compat::EventType::ButtonReleased(_, code) => {
                                 ev.event = self
                                     .button_map
                                     .get(&code.into_u32())
-                                    .map(|b| gilrs::EventType::ButtonReleased(*b, code))
+                                    .map(|b| crate::gilrs_compat::EventType::ButtonReleased(*b, code))
                                     .unwrap_or(ev.event);
                                 Some(ev)
                             }
-                            gilrs::EventType::ButtonChanged(_, v, code) => {
+                            crate::gilrs_compat::EventType::ButtonChanged(_, v, code) => {
                                 ev.event = self
                                     .button_map
                                     .get(&code.into_u32())
-                                    .map(|b| gilrs::EventType::ButtonChanged(*b, v, code))
+                                    .map(|b| crate::gilrs_compat::EventType::ButtonChanged(*b, v, code))
                                     .unwrap_or(ev.event);
                                 Some(ev)
                             }
-                            gilrs::EventType::AxisChanged(_, v, code) => {
+                            crate::gilrs_compat::EventType::AxisChanged(_, v, code) => {
                                 ev.event = self
                                     .axis_map
                                     .get(&code.into_u32())
                                     .copied()
                                     .map(|(axis, sens)| {
-                                        gilrs::EventType::AxisChanged(axis, v * sens, code)
+                                        crate::gilrs_compat::EventType::AxisChanged(axis, v * sens, code)
                                     })
                                     .unwrap_or(ev.event);
                                 Some(ev)
                             }
-                            gilrs::EventType::Connected => Some(ev),
-                            gilrs::EventType::Disconnected => Some(ev),
-                            gilrs::EventType::Dropped => Some(ev),
+                            crate::gilrs_compat::EventType::Connected => Some(ev),
+                            crate::gilrs_compat::EventType::Disconnected => Some(ev),
+                            crate::gilrs_compat::EventType::Dropped => Some(ev),
                             _ => Some(ev),
                         }
                         .or(Some(ev))
@@ -142,16 +142,16 @@ impl FilterFn for RuscFilter {
 use serde::{Deserialize, Serialize};
 
 impl FilterFn for CustomBindingFilter {
-    fn filter(&self, ev: Option<Event>, gilrs: &mut gilrs::Gilrs) -> Option<Event> {
+    fn filter(&self, ev: Option<Event>, gilrs: &mut crate::gilrs_compat::Gilrs) -> Option<Event> {
         match ev {
             Some(mut ev) => {
                 let uuid = uuid::Uuid::from_bytes(gilrs.gamepad(ev.id).uuid());
                 if let Some(bindings) = GameConfig::get().controller_binds.get(&uuid) {
                     match &mut ev.event {
-                        gilrs::EventType::ButtonPressed(button, code)
-                        | gilrs::EventType::ButtonRepeated(button, code)
-                        | gilrs::EventType::ButtonReleased(button, code)
-                        | gilrs::EventType::ButtonChanged(button, _, code) => {
+                        crate::gilrs_compat::EventType::ButtonPressed(button, code)
+                        | crate::gilrs_compat::EventType::ButtonRepeated(button, code)
+                        | crate::gilrs_compat::EventType::ButtonReleased(button, code)
+                        | crate::gilrs_compat::EventType::ButtonChanged(button, _, code) => {
                             *button = bindings
                                 .buttons
                                 .iter()
@@ -159,7 +159,7 @@ impl FilterFn for CustomBindingFilter {
                                 .map(|x| *x.0)
                                 .unwrap_or(*button);
                         }
-                        gilrs::EventType::AxisChanged(axis, _, code) => {
+                        crate::gilrs_compat::EventType::AxisChanged(axis, _, code) => {
                             *axis = bindings
                                 .axis
                                 .iter()
@@ -167,9 +167,9 @@ impl FilterFn for CustomBindingFilter {
                                 .map(|x| *x.0)
                                 .unwrap_or(*axis)
                         }
-                        gilrs::EventType::Connected => {}
-                        gilrs::EventType::Disconnected => {}
-                        gilrs::EventType::Dropped => {}
+                        crate::gilrs_compat::EventType::Connected => {}
+                        crate::gilrs_compat::EventType::Disconnected => {}
+                        crate::gilrs_compat::EventType::Dropped => {}
                         _ => {}
                     }
                 }

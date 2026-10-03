@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use egui::Stroke;
-use gilrs::{ev::Code, Axis, Button, GamepadId};
+use crate::gilrs_compat::{ev::Code, Axis, Button, GamepadId};
 use uuid::Uuid;
 use winit::keyboard::PhysicalKey;
 

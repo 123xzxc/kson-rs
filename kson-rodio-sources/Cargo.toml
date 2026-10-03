@@ -8,10 +8,13 @@ edition = "2021"
 [dependencies]
 rodio = { workspace = true }
 rand = { workspace = true }
-
+soundtouch = { git = 'https://github.com/Drewol/soundtouch-rs.git', optional = true }
 
 [profile.dev]
 opt = "3"
 
-[target.'cfg(not(target_os = "android"))'.dependencies]
-soundtouch = { git = 'https://github.com/Drewol/soundtouch-rs.git' }
+[features]
+default = []
+# Pitch shifting uses the vendored SoundTouch C++ library. It is unavailable on
+# Android and iOS, where a pass-through implementation is used instead.
+pitch-shift = ["dep:soundtouch"]
