@@ -13,7 +13,7 @@ settings:
     ENABLE_BITCODE: NO
     # The Rust staticlib contains Objective-C categories from objc2/objc crates
     # that must not be dead-stripped.
-    OTHER_LDFLAGS: $(inherited) -lc++ -lz -framework AVFoundation -framework CoreAudio -framework CoreMedia -framework AudioToolbox -framework CFNetwork -framework Security -framework SystemConfiguration
+    OTHER_LDFLAGS: $(inherited) -lc++ -lz -framework AVFoundation -framework CoreAudio -framework CoreMedia -framework AudioToolbox -framework CFNetwork -framework Security -framework SystemConfiguration -framework OpenGLES -framework CoreGraphics -framework QuartzCore -framework Foundation -framework UIKit
     DEAD_CODE_STRIPPING: NO
     CLANG_CXX_LANGUAGE_STANDARD: "c++17"
 
@@ -46,6 +46,9 @@ targets:
           set -euo pipefail
           cd "$SRCROOT/.."
           export PATH="$HOME/.cargo/bin:$PATH"
+          # Keep the Rust C dependencies and the Xcode link step on the same
+          # minimum OS version.
+          export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-15.0}"
           # `--no-default-features` keeps SoundTouch (a desktop-only C++
           # dependency) out of the iOS build.
           cargo build --release --target aarch64-apple-ios -p rusc --lib \

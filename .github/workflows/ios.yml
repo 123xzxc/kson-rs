@@ -36,6 +36,13 @@ jobs:
         # `embed-assets` bakes the default skin and fonts into the binary so the
         # app works without a separate resource copy; `--no-default-features`
         # keeps SoundTouch (desktop-only) out of the iOS build.
+        #
+        # `IPHONEOS_DEPLOYMENT_TARGET` must match `project.yml` so the C
+        # dependencies (Lua, ring, ...) and the final link step agree on the
+        # minimum OS version; otherwise `___chkstk_darwin` and friends are
+        # referenced without a matching definition.
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "15.0"
         run: |
           cargo build --release \
             --target aarch64-apple-ios \

@@ -1,6 +1,8 @@
 #import <UIKit/UIKit.h>
 #import <GLKit/GLKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <OpenGLES/EAGL.h>
+#import <dlfcn.h>
 
 NS_ASSUME_NONNULL_BEGIN
 

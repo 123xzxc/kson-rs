@@ -2,6 +2,23 @@
 #import <OpenGLES/ES3/gl.h>
 #import <OpenGLES/ES3/glext.h>
 
+/// GL entry-point lookup / presentation shims used by the Rust renderer.
+///
+/// The Rust side (`game/src/platform/render.rs`) cannot link against
+/// OpenGLES.framework directly, so it declares these two functions and the
+/// Objective-C layer implements them against the live `EAGLContext`.
+void *eagl_get_proc_address(EAGLContext *context, const char *name) {
+    // `EAGLContext` has no per-context symbol lookup: OpenGL ES on iOS exposes
+    // one global entry table, so the context argument only documents intent.
+    (void)context;
+    return (void *)dlsym(RTLD_DEFAULT, name);
+}
+
+void eagl_present_renderbuffer(EAGLContext *context) {
+    [EAGLContext setCurrentContext:context];
+    [context presentRenderbuffer:GL_RENDERBUFFER];
+}
+
 /// Declarations of the Rust exports (see game/src/platform/app.rs).
 extern bool kson_ios_init(const char *container_path,
                           const char *bundle_path,
