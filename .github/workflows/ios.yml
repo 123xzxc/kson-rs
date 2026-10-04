@@ -110,6 +110,12 @@ jobs:
           done
           [ -n "$NM" ] || { echo "no usable llvm-nm found"; exit 1; }
           echo "using $NM"
+          echo "--- archive members ---"
+          "$NM" "$LIB" | grep -i "rusc\." | head -n 20 || true
+          echo "--- external symbols mentioning kson ---"
+          "$NM" -g "$LIB" | grep -i "kson" | head -n 20 || true
+          echo "--- all symbols mentioning kson_ios ---"
+          "$NM" "$LIB" | grep -i "kson_ios" | head -n 20 || true
           "$NM" "$LIB" | grep -q "kson_ios_init" || {
             echo "librusc.a does not define the kson_ios_* entry points"
             "$NM" "$LIB" | grep -i 'ios' | head -n 20 || true
