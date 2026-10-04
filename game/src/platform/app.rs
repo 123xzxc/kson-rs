@@ -108,7 +108,6 @@ impl IosApp {
         };
         // The egui host paints through the same canvas the skins use, which it
         // resolves from `Vgfx` when it draws.
-        let canvas = Arc::new(canvas);
         let egui = IosEgui::new(render.size().0, render.size().1, scale);
 
         let services = ServiceCollection::new()
