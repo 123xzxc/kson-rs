@@ -163,21 +163,19 @@ jobs:
           nm -A "$SRCROOT/../target/aarch64-apple-ios/release/librusc.a" 2>/dev/null | grep -i "kson_ios" || echo "(none found)"
 
       - name: Verify static library linked
-        # `[profile.release] strip = true` in the root Cargo.toml strips local
-        # symbols from the Rust staticlib, so the entry points are not visible
-        # to a symbol-table search. Their presence is instead confirmed by the
-        # linker: `-u _kson_ios_init` (set via `FORCE_LOAD_SYMBOLS` in
-        # `project.yml`) fails the link if the archive does not define it.
+        # The app binary wraps the Rust staticlib, so the entry points show up
+        # as *defined* symbols. (`nm -u` would list them only if the linker had
+        # failed to resolve them.)
         run: |
           APP="$RUNNER_TEMP/KsonGame.xcarchive/Products/Applications/USC.app"
           test -f "$APP/USC" || { echo "missing executable"; exit 1; }
           for sym in _kson_ios_init _kson_ios_frame _kson_ios_resize _kson_ios_touch; do
-            if ! nm -u "$APP/USC" | grep -q " ${sym}$"; then
+            if ! nm -A "$APP/USC" | grep -q " ${sym}$"; then
               echo "missing ${sym}: the Rust staticlib was not linked in"
               exit 1
             fi
           done
-          echo "all Rust entry points are referenced by the app binary"
+          echo "all Rust entry points are present in the app binary"
 
       - uses: actions/upload-artifact@v4
         with:
