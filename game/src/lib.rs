@@ -7,10 +7,55 @@ include!("main.rs");
 // and the `#[no_mangle]` exports never reach `librusc.a`. The Objective-C
 // shell links against them through `FORCE_LOAD_SYMBOLS`, which would otherwise
 // fail with "undefined symbol _kson_ios_init".
+//
+// A plain `pub use` is not enough: an unexported `#[no_mangle]` symbol has
+// local visibility and the linker drops it as dead code. This `#[used]`
+// pointer table pins the functions (and everything they pull in, including
+// `IosApp`) into the archive.
+// The iOS entry points live in `platform::app`, but the crate root never
+// references them. Thin root-level wrappers keep the module reachable (and
+// therefore compiled into `librusc.a`) without changing the ABI the
+// Objective-C shell links against.
 #[cfg(target_os = "ios")]
-pub use platform::app::{
-    kson_ios_frame, kson_ios_init, kson_ios_resize, kson_ios_touch,
-};
+mod ios_exports {
+    use std::ffi::{c_char, c_void};
+
+    #[no_mangle]
+    pub unsafe extern "C" fn kson_ios_init(
+        container_path: *const c_char,
+        bundle_path: *const c_char,
+        eagl_context: *mut c_void,
+        framebuffer: u32,
+        width: u32,
+        height: u32,
+        scale: f32,
+    ) -> bool {
+        crate::platform::app::kson_ios_init(
+            container_path,
+            bundle_path,
+            eagl_context,
+            framebuffer,
+            width,
+            height,
+            scale,
+        )
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn kson_ios_frame(elapsed_ms: f64) {
+        crate::platform::app::kson_ios_frame(elapsed_ms)
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn kson_ios_resize(w: f64, h: f64, scale: f32) {
+        crate::platform::app::kson_ios_resize(w, h, scale)
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn kson_ios_touch(id: u64, x: f64, y: f64, phase: i32) {
+        crate::platform::app::kson_ios_touch(id, x, y, phase)
+    }
+}
 
 #[cfg(target_os = "android")]
 use winit::platform::android::activity::AndroidApp;

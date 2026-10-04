@@ -212,7 +212,6 @@ impl IosApp {
 /// # Safety
 /// All pointers must be valid for the duration of the call. `eagl_context`
 /// must be current on the calling thread.
-#[no_mangle]
 pub unsafe extern "C" fn kson_ios_init(
     container_path: *const c_char,
     bundle_path: *const c_char,
@@ -282,7 +281,6 @@ unsafe fn app() -> Option<&'static mut IosApp> {
 
 /// # Safety
 /// `elapsed_ms` is the time since the previous frame.
-#[no_mangle]
 pub unsafe extern "C" fn kson_ios_frame(elapsed_ms: f64) {
     if let Some(app) = app() {
         app.frame(elapsed_ms);
@@ -291,14 +289,12 @@ pub unsafe extern "C" fn kson_ios_frame(elapsed_ms: f64) {
 
 /// # Safety
 /// `w`/`h` are in logical points.
-#[no_mangle]
 pub unsafe extern "C" fn kson_ios_resize(w: f64, h: f64, scale: f32) {
     if let Some(app) = app() {
         app.resize(w, h, scale);
     }
 }
 
-#[no_mangle]
 pub unsafe extern "C" fn kson_ios_touch(id: u64, x: f64, y: f64, phase: i32) {
     if let Some(app) = app() {
         app.on_touch(id, x, y, phase);
