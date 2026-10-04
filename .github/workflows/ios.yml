@@ -76,13 +76,25 @@ jobs:
           # A `runtime` cdylib needs the app-side GL symbols, which do not
           # exist when the library is linked standalone. iOS only consumes the
           # staticlib, so restrict the emitted crate type here.
-          cargo rustc --release \
+          cargo rustc --release --verbose \
             --target aarch64-apple-ios \
             -p rusc \
             --lib \
             --crate-type staticlib \
             --features embed-assets \
             --no-default-features
+
+          LIB="target/aarch64-apple-ios/release/librusc.a"
+          test -f "$LIB" || { echo "missing $LIB"; exit 1; }
+          ls -la "$LIB"
+          # `-g` lists the external symbols each archive member defines. If the
+          # Rust entry points are missing here the staticlib never made it to
+          # the path Xcode links against.
+          nm -g "$LIB" | grep -c "kson_ios" | grep -qv '^0$' || {
+            echo "librusc.a does not define the kson_ios_* entry points"
+            nm -g "$LIB" | grep -i 'ios' | head -n 20 || true
+            exit 1
+          }
 
       - name: Generate Xcode project
         working-directory: ios
