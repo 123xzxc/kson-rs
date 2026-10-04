@@ -200,7 +200,9 @@ impl IosApp {
             game,
             services,
             render,
-            touch: IosTouchState::new(width, height),
+            // The touch grid lives in the same pixel space as the canvas, so
+            // the painted panel and the hit areas line up.
+            touch: IosTouchState::new(width * scale as f64, height * scale as f64),
             frame_tracker: FrameTracker::new(),
             knob_state: LaserState::default(),
             width,
@@ -218,7 +220,18 @@ impl IosApp {
         self.scale = scale;
         self.render
             .resize((width * scale as f64) as u32, (height * scale as f64) as u32);
-        self.touch.resize(width, height);
+        // femtovg keeps its own viewport: without this the skins and the touch
+        // panel keep drawing at the pre-rotation size and everything is offset.
+        {
+            let vgfx = self.game.vgfx().read().expect("Lock error");
+            let mut canvas = vgfx.canvas.lock().expect("Lock error");
+            canvas.set_size(
+                (width * scale as f64) as u32,
+                (height * scale as f64) as u32,
+                1.0,
+            );
+        }
+        self.touch.resize(width * scale as f64, height * scale as f64);
         self.game.resize_egui(width as u32, height as u32, scale);
     }
 
@@ -259,22 +272,14 @@ impl IosApp {
         let _ = self.frame_tracker.tick();
         self.frame_tracker.advance();
         self.flush_pending_touches();
-        let _exit = self.game.render_ios(frame_input, &mut self.render);
-
-        // The on-screen controller is drawn after the scenes but before egui,
-        // so egui screens (settings, downloads) stay readable on top.
-        {
-            let vgfx = self.game.vgfx();
-            let canvas = {
-                let vgfx = vgfx.read().expect("Lock error");
-                vgfx.canvas.clone()
-            };
-            let mut canvas = canvas.lock().expect("Lock error");
-            canvas.save();
-            self.touch.paint_overlay(&mut canvas);
-            canvas.restore();
-            canvas.flush();
-        }
+        // The overlay is drawn inside `render_ios`, before the frame is
+        // presented, through the same canvas the scenes use.
+        let touch = &self.touch;
+        let _exit = self
+            .game
+            .render_ios(frame_input, &mut self.render, |canvas| {
+                touch.paint_overlay(canvas);
+            });
         self.render.drain_error("after render_ios", frame_no);
     }
 

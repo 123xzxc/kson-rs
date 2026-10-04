@@ -9,6 +9,7 @@ use winit::event::TouchPhase as WinitTouchPhase;
 
 use crate::button_codes::UscInputEvent;
 use crate::touch::TouchHelper;
+use egui::Pos2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TouchPhase {
@@ -40,6 +41,10 @@ impl TouchPhase {
 }
 
 /// Maps raw touch coordinates onto the on-screen button grid.
+///
+/// All coordinates here are render pixels, the same space the femtovg canvas
+/// uses, so the painted panel and the hit areas line up 1:1. The caller scales
+/// the UIKit logical points before feeding them in.
 pub struct IosTouchState {
     helper: TouchHelper,
     width: f64,
@@ -62,6 +67,10 @@ pub struct IosTouchState {
     /// horizontal swipe is what a player expects to scroll a song wheel or a
     /// difficulty wheel with.
     drags: std::collections::HashMap<u64, (f64, f64)>,
+    /// Touches that started on a laser column, and the side that owns them.
+    /// A knob keeps turning for as long as the finger drags, so its last
+    /// position is kept to measure the next delta.
+    laser_drags: std::collections::HashMap<u64, (kson::Side, f64)>,
 }
 
 impl IosTouchState {
@@ -76,6 +85,7 @@ impl IosTouchState {
             active_touches: std::collections::HashSet::new(),
             gesture_moved: false,
             drags: std::collections::HashMap::new(),
+            laser_drags: std::collections::HashMap::new(),
         }
     }
 
@@ -232,6 +242,12 @@ impl IosTouchState {
     }
 
     /// Converts a UIKit touch into zero, one or two input events.
+    ///
+    /// Touches that land on a laser column are turned into continuous
+    /// `UscInputEvent::Laser` deltas: an SDVX knob is not a button, the game
+    /// reads a rotation and the hardware reports it as an angular delta. A drag
+    /// up the column turns that side's knob, so the on-screen knobs behave like
+    /// the real ones instead of a fixed nudge per tap.
     pub fn update(
         &mut self,
         id: u64,
@@ -245,6 +261,10 @@ impl IosTouchState {
             // whole screen and swallow menu taps, so nothing is translated
             // into controller input.
             return Vec::new();
+        }
+
+        if let Some(events) = self.update_laser_drag(id, x, y, phase) {
+            return events;
         }
 
         let touch = winit::event::Touch {
@@ -264,6 +284,70 @@ impl IosTouchState {
                 events
             }
             None => Vec::new(),
+        }
+    }
+
+    /// Rotates a laser knob when a touch starts inside one of the laser
+    /// columns. Returns `None` when the touch is not on a laser, so the caller
+    /// falls back to the button grid.
+    ///
+    /// A full screen height of travel is one full turn, which makes the knob
+    /// reachable with a comfortable swipe on a tablet.
+    fn update_laser_drag(
+        &mut self,
+        id: u64,
+        x: f64,
+        y: f64,
+        phase: TouchPhase,
+    ) -> Option<Vec<UscInputEvent>> {
+        use crate::button_codes::{LaserState, UscButton};
+
+        // Which laser column is under the finger, looked up only on the first
+        // event so a drag that leaves the column keeps turning the same knob.
+        let side = match phase {
+            TouchPhase::Began => {
+                let point = Pos2::new(x as f32, y as f32);
+                self.helper.areas().iter().find_map(|(button, area)| {
+                    if !area.contains(point) {
+                        return None;
+                    }
+                    match button {
+                        UscButton::Laser(side, _) => Some(*side),
+                        _ => None,
+                    }
+                })
+            }
+            _ => self.laser_drags.get(&id).map(|(side, _)| *side),
+        };
+        let Some(side) = side else {
+            return None;
+        };
+
+        match phase {
+            TouchPhase::Began => {
+                self.laser_drags.insert(id, (side, y));
+                Some(Vec::new())
+            }
+            TouchPhase::Moved => {
+                let Some((_, last_y)) = self.laser_drags.get(&id).copied() else {
+                    return None;
+                };
+                self.laser_drags.insert(id, (side, y));
+                // Turning up moves the knob one way, down the other; the sign
+                // matches the desktop `Laser` axis convention.
+                let per_point = std::f32::consts::TAU / self.height.max(1.0) as f32;
+                let delta = -(y - last_y) as f32 * per_point;
+                if delta == 0.0 {
+                    return Some(Vec::new());
+                }
+                let mut laser = LaserState::default();
+                laser.update_delta(side, delta);
+                Some(vec![UscInputEvent::Laser(laser, std::time::SystemTime::now())])
+            }
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                self.laser_drags.remove(&id);
+                Some(Vec::new())
+            }
         }
     }
 

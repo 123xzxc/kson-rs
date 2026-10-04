@@ -1029,6 +1029,7 @@ impl GameMain {
         &mut self,
         frame_input: FrameInput,
         render: &mut crate::platform::render::RenderContext,
+        paint_overlay: impl FnOnce(&mut femtovg::Canvas<femtovg::renderer::OpenGl>),
     ) -> bool {
         let GameMain {
             lua_arena,
@@ -1246,6 +1247,19 @@ impl GameMain {
         scenes.render(frame_input.clone(), vgfx);
         Self::render_overlays(vgfx, &frame_input, fps, fps_paint, *show_fps);
         Self::run_lua_gc(lua_arena, &mut vgfx.write().expect("Lock error"));
+
+        // The on-screen controller is a skin-layer overlay, so it has to be
+        // drawn through the same canvas as the scenes, before `present` commits
+        // the frame. Drawing it after `render_ios` returned left it on a
+        // buffer that was about to be replaced, which is why it only flashed.
+        {
+            let vgfx = vgfx.read().expect("Lock error");
+            let mut canvas = vgfx.canvas.lock().expect("Lock error");
+            canvas.save();
+            paint_overlay(&mut canvas);
+            canvas.restore();
+            canvas.flush();
+        }
 
         // egui draws the settings and download screens, which are not part of
         // any skin. Their primitives are rasterized with `egui_glow::Painter`,
