@@ -101,11 +101,12 @@ extern void kson_ios_touch(uint64_t touch_id, double x, double y, int32_t phase)
 
     glGenFramebuffers(1, &_framebuffer);
     glGenRenderbuffers(1, &_colorRenderbuffer);
-    glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
-    glBindRenderbuffer(GL_RENDERBUFFER, _colorRenderbuffer);
-    [_context renderbufferStorage:GL_RENDERBUFFER fromDrawable:layer];
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, _colorRenderbuffer);
 
+    // `commonInit` runs from `initWithFrame:`/`initWithCoder:`, before the view
+    // has been laid out, so `bounds` is frequently 0x0. Attaching a 0x0
+    // drawable produces an incomplete framebuffer that never becomes complete
+    // after `layoutSubviews` re-attaches unless we retry; create the storage
+    // lazily from `layoutSubviews` instead.
     [self resizeDrawable];
 }
 
@@ -136,9 +137,19 @@ extern void kson_ios_touch(uint64_t touch_id, double x, double y, int32_t phase)
 
 - (void)resizeDrawable {
     [EAGLContext setCurrentContext:_context];
+    if (_context == nil || self.bounds.size.width <= 0.0 || self.bounds.size.height <= 0.0) {
+        return;
+    }
     glBindRenderbuffer(GL_RENDERBUFFER, _colorRenderbuffer);
     [_context renderbufferStorage:GL_RENDERBUFFER fromDrawable:(CAEAGLLayer *)self.layer];
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, _colorRenderbuffer);
+
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        NSLog(@"[KsonGame] framebuffer incomplete: 0x%x (%.0fx%.0f @%.1fx)",
+              status, self.bounds.size.width, self.bounds.size.height,
+              self.contentScaleFactor);
+    }
 
     CGFloat scale = self.contentScaleFactor;
     CGFloat w = self.bounds.size.width;
@@ -194,11 +205,37 @@ extern void kson_ios_touch(uint64_t touch_id, double x, double y, int32_t phase)
     [EAGLContext setCurrentContext:_context];
     glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
 
-    NSString *container = NSHomeDirectory();
     NSString *resources = [[NSBundle mainBundle] resourcePath];
+
+    // `NSHomeDirectory()` is not trustworthy under sideloading tools such as
+    // LiveContainer: it can return a path inside the *host* app's container
+    // (`.../Documents/Data/Application/<uuid>/...`), which is both unwritable
+    // in the expected way and different from the bundle location. Deriving the
+    // container from the bundle keeps config, skins and the log file next to
+    // the app that actually owns them.
+    NSString *container = NSHomeDirectory();
+    NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+    NSRange appRange = [bundlePath rangeOfString:@".app" options:NSBackwardsSearch];
+    if (appRange.location != NSNotFound) {
+        NSRange slashRange = [bundlePath rangeOfString:@"/"
+                                                options:NSBackwardsSearch
+                                                  range:NSMakeRange(0, appRange.location)];
+        if (slashRange.location != NSNotFound && slashRange.location > 0) {
+            NSString *derived = [bundlePath substringToIndex:slashRange.location];
+            // Only trust the derived path when it is actually writable; some
+            // hosts launch the app from a read-only staging directory.
+            if ([[NSFileManager defaultManager] isWritableFileAtPath:derived]) {
+                container = derived;
+            }
+        }
+    }
 
     GLint width = [self drawableWidth];
     GLint height = [self drawableHeight];
+
+    NSLog(@"[KsonGame] init container=%@ bundle=%@ fb=%u size=%dx%d scale=%.2f",
+          container, resources, _framebuffer, (int)width, (int)height,
+          (double)self.contentScaleFactor);
 
     return kson_ios_init(container.fileSystemRepresentation,
                          resources.fileSystemRepresentation,

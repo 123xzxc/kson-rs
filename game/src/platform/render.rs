@@ -98,6 +98,23 @@ impl RenderContext {
 
     /// Presents the color renderbuffer (EAGL `presentRenderbuffer:`).
     pub fn present(&self) {
+        // Diagnose the "audio plays but nothing appears" class of failure: the
+        // EAGL error from `presentRenderbuffer:` is the only signal that the
+        // drawable or the renderbuffer attachment is wrong, and it is not
+        // surfaced to Rust otherwise. Log the first few presents plus every
+        // 300th frame so a hung/blank screen leaves a trace in `ios.log`.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static PRESENTS: AtomicU64 = AtomicU64::new(0);
+        let n = PRESENTS.fetch_add(1, Ordering::Relaxed);
+        let (w, h) = self.size();
+        if n < 3 || n % 300 == 0 {
+            let err = unsafe { gl_get_error() };
+            log::info!(
+                "present #{n} fb={} size={w}x{h} scale={} gl_error=0x{err:x}",
+                self.framebuffer,
+                self.scale
+            );
+        }
         unsafe { eagl_present_renderbuffer(self.eagl) }
     }
 }
@@ -108,6 +125,11 @@ extern "C" {
         name: *const std::os::raw::c_char,
     ) -> *const c_void;
     fn eagl_present_renderbuffer(context: *mut c_void);
+    fn glGetError() -> u32;
+}
+
+unsafe fn gl_get_error() -> u32 {
+    glGetError()
 }
 
 /// Looks up a GL entry point on the given `EAGLContext*`. Public so the canvas
