@@ -1,4 +1,5 @@
 #import "KsonGameView.h"
+#import <dispatch/dispatch.h>
 #import <OpenGLES/ES3/gl.h>
 #import <OpenGLES/ES3/glext.h>
 
@@ -10,8 +11,24 @@
 void *eagl_get_proc_address(EAGLContext *context, const char *name) {
     // `EAGLContext` has no per-context symbol lookup: OpenGL ES on iOS exposes
     // one global entry table, so the context argument only documents intent.
+    //
+    // `dlsym(RTLD_DEFAULT, ...)` does *not* find the OpenGL ES entry points:
+    // they are weak-imported from OpenGLES.framework and are not part of the
+    // default symbol search scope. Resolving through the framework handle
+    // returns the real function pointers; without this glow and femtovg
+    // silently end up with NULL for every entry point, which renders nothing
+    // while audio keeps playing.
     (void)context;
-    return (void *)dlsym(RTLD_DEFAULT, name);
+    static void *handle = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        handle = dlopen("/System/Library/Frameworks/OpenGLES.framework/OpenGLES",
+                        RTLD_LAZY | RTLD_LOCAL);
+    });
+    if (handle == NULL) {
+        return NULL;
+    }
+    return dlsym(handle, name);
 }
 
 void eagl_present_renderbuffer(EAGLContext *context) {
