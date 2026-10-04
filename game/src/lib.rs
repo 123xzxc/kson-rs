@@ -1,5 +1,17 @@
 include!("main.rs");
 
+// Keep the iOS entry points alive when the crate is built as a staticlib.
+//
+// `main.rs` has no iOS `main`, and nothing in the game code calls these
+// functions, so without a reference rustc emits an empty `rusc` object file
+// and the `#[no_mangle]` exports never reach `librusc.a`. The Objective-C
+// shell links against them through `FORCE_LOAD_SYMBOLS`, which would otherwise
+// fail with "undefined symbol _kson_ios_init".
+#[cfg(target_os = "ios")]
+pub use platform::app::{
+    kson_ios_frame, kson_ios_init, kson_ios_resize, kson_ios_touch,
+};
+
 #[cfg(target_os = "android")]
 use winit::platform::android::activity::AndroidApp;
 
