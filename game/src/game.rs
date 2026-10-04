@@ -1874,6 +1874,18 @@ impl Scene for Game {
     fn init(&mut self, app_control_tx: Sender<ControlMessage>) -> Result<()> {
         profile_function!();
         let lua_provider: Arc<LuaProvider> = self.service_provider.get_required();
+        // `Empty chart` aborts the scene, which from the player's side looks
+        // exactly like the tap was ignored. Record what the parsed chart
+        // actually contains so an empty result is distinguishable from a
+        // failed load.
+        info!(
+            "chart `{}` loaded: beats={} notes={} total_ticks={} summary={:?}",
+            self.chart.meta.title,
+            self.chart.beat.bpm.len(),
+            self.chart.note.bt.len() + self.chart.note.fx.len() + self.chart.note.laser.len(),
+            self.chart.get_last_tick(),
+            self.score_summary
+        );
         ensure!(self.score_summary.total != 0, "Empty chart");
         let long_count = self.score_summary.hold_count + self.score_summary.laser_count;
         let chip_count = self.score_summary.chip_count + self.score_summary.slam_count;

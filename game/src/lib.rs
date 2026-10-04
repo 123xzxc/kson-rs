@@ -55,6 +55,16 @@ mod ios_exports {
     pub unsafe extern "C" fn kson_ios_touch(id: u64, x: f64, y: f64, phase: i32) {
         crate::platform::app::kson_ios_touch(id, x, y, phase)
     }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn kson_ios_gamepad_button(button: i32, pressed: bool) {
+        crate::platform::app::kson_ios_gamepad_button(button, pressed)
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn kson_ios_gamepad_axis(side: i32, value: f32) {
+        crate::platform::app::kson_ios_gamepad_axis(side, value)
+    }
 }
 
 #[cfg(target_os = "android")]

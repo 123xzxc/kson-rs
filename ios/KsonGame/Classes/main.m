@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import "KsonGameView.h"
+#import "KsonGamepad.h"
 
 @interface KsonGameViewController : UIViewController
 @property(nonatomic, strong) KsonGameView *gameView;
@@ -47,6 +48,8 @@
 
 - (BOOL)application:(UIApplication *)application
         didFinishLaunchingWithOptions:(NSDictionary<UIApplicationLaunchOptionsKey, id> *)launchOptions {
+    // Controllers can connect at any time, including before the game starts.
+    [KsonGamepad start];
     self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
     self.window.rootViewController = [[KsonGameViewController alloc] init];
     [self.window makeKeyAndVisible];

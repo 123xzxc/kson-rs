@@ -7,6 +7,8 @@
 #[cfg(target_os = "ios")]
 pub mod app;
 #[cfg(target_os = "ios")]
+pub mod gamepad;
+#[cfg(target_os = "ios")]
 pub mod input;
 #[cfg(target_os = "ios")]
 pub mod paths;

@@ -13,7 +13,7 @@ settings:
     ENABLE_BITCODE: NO
     # The Rust staticlib contains Objective-C categories from objc2/objc crates
     # that must not be dead-stripped.
-    OTHER_LDFLAGS: $(inherited) -lc++ -lz -framework AVFoundation -framework CoreAudio -framework CoreMedia -framework AudioToolbox -framework CFNetwork -framework Security -framework SystemConfiguration -framework OpenGLES -framework CoreGraphics -framework QuartzCore -framework Foundation -framework UIKit
+    OTHER_LDFLAGS: $(inherited) -lc++ -lz -framework AVFoundation -framework CoreAudio -framework CoreMedia -framework AudioToolbox -framework CFNetwork -framework Security -framework SystemConfiguration -framework OpenGLES -framework CoreGraphics -framework QuartzCore -framework Foundation -framework UIKit -framework GameController
     DEAD_CODE_STRIPPING: NO
     CLANG_CXX_LANGUAGE_STANDARD: "c++17"
 

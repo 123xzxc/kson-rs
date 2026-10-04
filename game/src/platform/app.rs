@@ -16,6 +16,7 @@ use log::*;
 use rodio::{cpal::BufferSize, nz, source::Source};
 
 use crate::async_service::AsyncService;
+use crate::button_codes::LaserState;
 use crate::companion_interface::CompanionServer;
 use crate::config::{Args, GameConfig};
 use crate::egui_host::IosEgui;
@@ -42,6 +43,9 @@ pub struct IosApp {
     render: RenderContext,
     touch: IosTouchState,
     frame_tracker: FrameTracker,
+    /// Laser positions accumulated from gamepad stick events, kept across
+    /// frames so an axis event reports both sides.
+    knob_state: LaserState,
     width: f64,
     height: f64,
     scale: f32,
@@ -177,6 +181,7 @@ impl IosApp {
             render,
             touch: IosTouchState::new(width, height),
             frame_tracker: FrameTracker::new(),
+            knob_state: LaserState::default(),
             width,
             height,
             scale,
@@ -196,6 +201,11 @@ impl IosApp {
 
     pub fn frame(&mut self, elapsed_ms: f64) {
         let frame_no = self.frame_tracker.frames();
+        // Gamepad events feed the same queue as touch input; drain them before
+        // the scenes advance so a button press is visible on this frame.
+        for event in crate::platform::gamepad::drain(&mut self.knob_state) {
+            self.game.handle_input_event(event);
+        }
         self.render.drain_error("frame-start", frame_no);
         self.render.bind_framebuffer();
         self.render.drain_error("after bind_framebuffer", frame_no);
@@ -403,4 +413,25 @@ pub unsafe extern "C" fn kson_ios_touch(id: u64, x: f64, y: f64, phase: i32) {
     if let Some(app) = app() {
         app.on_touch(id, x, y, phase);
     }
+}
+
+/// Gamepad button state from `GCController`.
+///
+/// `button` uses the numbering documented in `platform::gamepad`. Events are
+/// queued and consumed by the next frame, so calling this off the render
+/// thread is safe.
+///
+/// # Safety
+/// `button` must be a value the bridge knows; unknown values are ignored.
+pub unsafe extern "C" fn kson_ios_gamepad_button(button: i32, pressed: bool) {
+    crate::platform::gamepad::push_button(button, pressed);
+}
+
+/// Gamepad stick position from `GCController`; `side` is 0 for left, 1 for
+/// right.
+///
+/// # Safety
+/// `value` is expected in -1.0..=1.0.
+pub unsafe extern "C" fn kson_ios_gamepad_axis(side: i32, value: f32) {
+    crate::platform::gamepad::push_axis(side, value);
 }
