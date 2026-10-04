@@ -31,8 +31,14 @@ void *eagl_get_proc_address(EAGLContext *context, const char *name) {
     return dlsym(handle, name);
 }
 
-void eagl_present_renderbuffer(EAGLContext *context) {
+void eagl_present_renderbuffer(EAGLContext *context, uint32_t framebuffer) {
     [EAGLContext setCurrentContext:context];
+    // Re-attach the drawable's renderbuffer before presenting. femtovg and
+    // three-d (via the redirection shim) bind their own framebuffer objects
+    // during a frame, and EAGL only accepts `presentRenderbuffer:` when the
+    // currently bound framebuffer's color attachment *is* that renderbuffer.
+    // Without this the call fails with GL_INVALID_OPERATION.
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
     [context presentRenderbuffer:GL_RENDERBUFFER];
 }
 

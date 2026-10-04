@@ -83,8 +83,12 @@ impl RenderContext {
                             unsafe extern "C" fn(u32, u32),
                         >(real));
                     }
+                    log::info!(
+                        "glBindFramebuffer captured, redirecting fb 0 -> {framebuffer}"
+                    );
                     return ios_bind_framebuffer as *const c_void;
                 }
+                log::error!("glBindFramebuffer lookup returned NULL");
                 return real;
             }
             eagl_get_proc_address(eagl_context, s.as_ptr()) as *const _
@@ -170,20 +174,20 @@ impl RenderContext {
         if log_this {
             let _ = unsafe { self.glow.get_error() };
         }
-        // femtovg leaves its own framebuffer bound after flushing. EAGL's
-        // `presentRenderbuffer:` only works when the drawable's renderbuffer is
-        // attached to the *currently bound* framebuffer, so rebind ours right
-        // before presenting (this is what produced GL_INVALID_OPERATION 0x502).
-        unsafe {
-            if let Some(real) = REAL_BIND_FRAMEBUFFER {
-                real(0x8D40 /* GL_FRAMEBUFFER */, self.framebuffer);
-            }
-        }
-        unsafe { eagl_present_renderbuffer(self.eagl) }
+        // The Objective-C side rebinds the drawable framebuffer before calling
+        // `presentRenderbuffer:`: EAGL only accepts the call when the color
+        // attachment of the bound framebuffer is the drawable's renderbuffer,
+        // and femtovg/three-d have since bound their own FBOs.
+        unsafe { eagl_present_renderbuffer(self.eagl, self.framebuffer) }
         if log_this {
             let err = unsafe { self.glow.get_error() };
+            // Inspect the state `presentRenderbuffer:` actually saw: EAGL
+            // rejects the call when the bound framebuffer is incomplete or
+            // when its color attachment is not the drawable renderbuffer.
+            let bound = unsafe { self.glow.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING) };
+            let status = unsafe { self.glow.check_framebuffer_status(glow::FRAMEBUFFER) };
             log::info!(
-                "present #{n} fb={} size={w}x{h} scale={} gl_error=0x{err:x}",
+                "present #{n} fb={} bound={bound} status=0x{status:x} size={w}x{h} scale={} gl_error=0x{err:x}",
                 self.framebuffer,
                 self.scale
             );
@@ -196,7 +200,7 @@ extern "C" {
         context: *mut c_void,
         name: *const std::os::raw::c_char,
     ) -> *const c_void;
-    fn eagl_present_renderbuffer(context: *mut c_void);
+    fn eagl_present_renderbuffer(context: *mut c_void, framebuffer: u32);
 }
 
 /// Looks up a GL entry point on the given `EAGLContext*`. Public so the canvas
