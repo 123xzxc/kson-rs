@@ -110,23 +110,32 @@ impl TouchHelper {
     }
     pub fn new(screen_size: Vec2) -> Self {
         /*
-           -----------------
-           |  |  back?  |  |
-           |  |         |  |
-           |LL|---------|RL|
-           |  |  start  |  |
-           |  |         |  |
-           |--|---------|--|
-           |  |a  b c  d|  |
-           |LR|         |RR|
-           |  |---------|  |
-           |  | fx | fx |  |
-           |  |  L |  R |  |
-           -----------------
+           Horizontal band across the middle, mirroring the SDVX panel: the two
+           laser columns run down the outer edges, FX-L/A/B/C/D/FX-R form the
+           bottom row, and Start/Back sit above it. The split laser columns
+           (`.:: left, ::. right`) are the two halves of each side's knob.
+
+           -----------------------
+           |  |      back      |  |
+           |  |----------------|  |
+           |LL|      start     |RL|
+           |  |----------------|  |
+           |  | FX a  b  c  d |  |
+           |--|    |  |  |    |--|
+           |LR| FX |  |  | FX |RR|
+           |  |  L |  |  | R  |  |
+           -----------------------
         */
 
         let col_width = screen_size.x / 6.0;
         let row_height = screen_size.y / 4.0;
+        // The panel row (FX + BT) is centred vertically so it sits where the
+        // player's hands rest in landscape.
+        let panel_top = row_height * 2.0;
+        let panel_bottom = row_height * 3.0;
+        let key_width = col_width * 0.9;
+        let key_gap = col_width * 0.1;
+        let fx_width = col_width * 0.6;
 
         let mut button_areas: HashMap<UscButton, Rect> = HashMap::new();
 
@@ -166,33 +175,38 @@ impl TouchHelper {
         );
 
         for i in 0..4usize {
+            // BT-A..D form one centred row, with a small gap between the keys.
+            let slot = i as f32;
+            let x0 = col_width + slot * col_width + key_gap * 0.5;
             button_areas.insert(
                 UscButton::BT(i.try_into().unwrap()),
                 rect(
-                    col_width + col_width * i as f32,
-                    row_height * 2.0,
-                    col_width * 2.0 + col_width * i as f32,
-                    row_height * 3.0,
+                    x0,
+                    panel_top,
+                    x0 + key_width,
+                    panel_bottom,
                 ),
             );
         }
 
+        // FX panels flank the BT row: FX-L immediately left of BT-A, FX-R
+        // immediately right of BT-D, which is the real panel order.
         button_areas.insert(
             UscButton::FX(kson::Side::Left),
             rect(
+                col_width - fx_width,
+                panel_top,
                 col_width,
-                row_height * 3.0,
-                col_width * 3.0,
-                row_height * 4.0,
+                panel_bottom,
             ),
         );
         button_areas.insert(
             UscButton::FX(kson::Side::Right),
             rect(
-                col_width * 3.0,
-                row_height * 3.0,
                 col_width * 5.0,
-                row_height * 4.0,
+                panel_top,
+                col_width * 5.0 + fx_width,
+                panel_bottom,
             ),
         );
 
@@ -213,5 +227,10 @@ impl TouchHelper {
 
     pub fn screen_size(&self) -> Vec2 {
         self.screen_size
+    }
+
+    /// Buttons currently held by a touch, so an overlay can highlight them.
+    pub fn held(&self) -> impl Iterator<Item = &UscButton> {
+        self.held_buttons.values()
     }
 }

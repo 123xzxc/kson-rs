@@ -93,11 +93,17 @@ impl IosTouchState {
         self.virtual_buttons
     }
 
+    /// Panels currently held, so the overlay can light them up.
+    fn held(&self) -> std::collections::HashSet<crate::button_codes::UscButton> {
+        self.helper.held().copied().collect()
+    }
+
     /// Draws the on-screen controller over the framebuffer.
     ///
-    /// The hit areas already exist but were invisible, so the player had no way
-    /// to know where the buttons or the laser knobs were. The laser columns are
-    /// drawn as knobs, everything else as buttons.
+    /// The layout follows the SDVX panel: four BT lanes and two FX panels in a
+    /// row across the middle, the two laser columns down the outer edges, and
+    /// the menu keys on the inner top rows. Everything is translucent so the
+    /// chart stays readable underneath, and a held panel lights up.
     pub fn paint_overlay(&self, canvas: &mut femtovg::Canvas<femtovg::renderer::OpenGl>) {
         if !self.virtual_buttons {
             return;
@@ -105,66 +111,73 @@ impl IosTouchState {
         use femtovg::{Color, Paint, Path};
         use crate::button_codes::UscButton;
 
-        let size = self.helper.screen_size();
+        let held = self.held();
         let _ = canvas.save();
         canvas.set_global_alpha(1.0);
 
-        // Background panels so the buttons stay readable over bright skins.
-        let mut backdrop = Path::new();
-        backdrop.rect(0.0, 0.0, size.x, size.y / 4.0 * 4.0);
-        canvas.fill_path(
-            &backdrop,
-            &Paint::color(Color::rgba(0, 0, 0, 60)),
-        );
-
         for (button, area) in self.helper.areas() {
-            let cx = (area.min.x + area.max.x) * 0.5;
-            let cy = (area.min.y + area.max.y) * 0.5;
+            let active = held.contains(button);
+            let pad = 6.0;
+            let (x, y, w, h) = (
+                area.min.x + pad,
+                area.min.y + pad,
+                area.width() - pad * 2.0,
+                area.height() - pad * 2.0,
+            );
+            let (fill, border) = panel_colors(button, active);
+
+            // Translucent body plus an outline, so the panel reads as a key
+            // without hiding the chart behind it.
+            let mut body = Path::new();
+            body.rounded_rect(x, y, w, h, 12.0);
+            canvas.fill_path(&body, &Paint::color(fill));
+            canvas.stroke_path(
+                &body,
+                &Paint::color(border).with_line_width(if active { 5.0 } else { 2.0 }),
+            );
+
             match button {
                 UscButton::Laser(_, _) => {
-                    // A knob: a ring plus a radial pointer.
-                    let radius = (area.width().min(area.height()) * 0.30).max(18.0);
+                    // A laser column: a ring plus a knob, centred in the track.
+                    let cx = x + w * 0.5;
+                    let cy = y + h * 0.5;
+                    let radius = (w.min(h) * 0.22).max(16.0);
                     let mut ring = Path::new();
                     ring.circle(cx, cy, radius);
                     canvas.stroke_path(
                         &ring,
-                        &Paint::color(Color::rgba(255, 255, 255, 150)).with_line_width(6.0),
+                        &Paint::color(Color::rgba(255, 255, 255, 200)).with_line_width(5.0),
                     );
-                    let mut fill = Path::new();
-                    fill.circle(cx, cy, radius * 0.55);
-                    canvas.fill_path(&fill, &Paint::color(Color::rgba(255, 255, 255, 55)));
-                    // Pointer showing the neutral direction, one per side.
-                    let dir_left = matches!(button, UscButton::Laser(_, kson::Side::Left));
-                    let (dx, dy) = if dir_left { (-radius * 0.6, -radius * 0.6) } else { (radius * 0.6, -radius * 0.6) };
+                    let mut knob = Path::new();
+                    knob.circle(cx, cy, radius * 0.62);
+                    canvas.fill_path(&knob, &Paint::color(Color::rgba(255, 255, 255, 110)));
+                    // A tick at the neutral angle, mirrored per side so the two
+                    // lasers read as opposite halves of the same pair.
+                    let left = matches!(button, UscButton::Laser(kson::Side::Left, _));
+                    let (dx, dy) = if left {
+                        (-radius * 0.7, -radius * 0.7)
+                    } else {
+                        (radius * 0.7, -radius * 0.7)
+                    };
                     let mut pointer = Path::new();
                     pointer.move_to(cx, cy);
                     pointer.line_to(cx + dx, cy + dy);
                     canvas.stroke_path(
                         &pointer,
-                        &Paint::color(Color::rgba(255, 255, 255, 220)).with_line_width(8.0),
+                        &Paint::color(Color::rgba(255, 255, 255, 240)).with_line_width(6.0),
                     );
-                }
-                UscButton::FX(_) => {
-                    let mut r = Path::new();
-                    r.rounded_rect(
-                        area.min.x + 6.0,
-                        area.min.y + 6.0,
-                        area.width() - 12.0,
-                        area.height() - 12.0,
-                        14.0,
-                    );
-                    canvas.fill_path(&r, &Paint::color(Color::rgba(120, 200, 255, 70)));
                 }
                 _ => {
-                    let mut r = Path::new();
-                    r.rounded_rect(
-                        area.min.x + 6.0,
-                        area.min.y + 6.0,
-                        area.width() - 12.0,
-                        area.height() - 12.0,
-                        14.0,
+                    // A short bar so a rectangular key reads as a button.
+                    let mut bar = Path::new();
+                    bar.rounded_rect(
+                        x + w * 0.16,
+                        y + h * 0.42,
+                        w * 0.68,
+                        (h * 0.16).max(3.0),
+                        3.0,
                     );
-                    canvas.fill_path(&r, &Paint::color(Color::rgba(255, 255, 255, 55)));
+                    canvas.fill_path(&bar, &Paint::color(Color::rgba(255, 255, 255, 90)));
                 }
             }
         }
@@ -298,5 +311,36 @@ impl IosTouchState {
                 Vec::new()
             }
         }
+    }
+}
+
+/// Fill and outline for one on-screen panel, in the SDVX colour language:
+/// cyan for BT, magenta for the FX panels, a neutral white for the menu and
+/// laser keys. Everything is translucent, and a held panel gets a brighter
+/// fill and border.
+fn panel_colors(
+    button: &crate::button_codes::UscButton,
+    active: bool,
+) -> (femtovg::Color, femtovg::Color) {
+    use crate::button_codes::UscButton;
+    use femtovg::Color;
+
+    // (fill, border) at rest; the held variants are derived below.
+    let (r, g, b) = match button {
+        UscButton::BT(_) => (90, 210, 255),
+        UscButton::FX(_) => (255, 120, 210),
+        UscButton::Laser(_, _) => (255, 220, 120),
+        _ => (220, 220, 230),
+    };
+    if active {
+        (
+            Color::rgba(r, g, b, 200),
+            Color::rgba(255, 255, 255, 255),
+        )
+    } else {
+        (
+            Color::rgba(r, g, b, 42),
+            Color::rgba(r, g, b, 160),
+        )
     }
 }
