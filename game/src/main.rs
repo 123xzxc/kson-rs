@@ -275,6 +275,14 @@ impl Scenes {
         self.active.last().is_some_and(|t| t.touch_as_mouse())
     }
 
+    /// True when the top scene is a mouse-driven menu (title, song select,
+    /// settings). iOS turns a drag there into a knob turn so the wheels can be
+    /// scrolled with a swipe; gameplay keeps the raw touch, where a drag is a
+    /// laser gesture and must not be reinterpreted.
+    pub fn menu_wants_drag(&self) -> bool {
+        self.touch_as_mouse()
+    }
+
     pub fn render_egui(&mut self, ctx: &egui::Context) {
         profile_function!();
         for scene in &mut self.active {

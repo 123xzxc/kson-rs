@@ -1344,9 +1344,25 @@ impl GameMain {
         true
     }
 
+    /// Whether a touch drag should be turned into knob turns rather than fed to
+    /// the on-screen controller.
+    ///
+    /// True on the mouse-driven menus (title, song select, settings) so a swipe
+    /// scrolls the song and difficulty wheels; false during gameplay, where the
+    /// drag is a laser gesture.
+    #[cfg(target_os = "ios")]
+    pub fn menu_wants_drag(&self) -> bool {
+        self.scenes.menu_wants_drag()
+    }
+
     /// Desktop synthesizes `CursorMoved` + `MouseInput` from a touch when the
     /// active scene advertises `touch_as_mouse`. iOS has no winit event loop, so
     /// reproduce that synthesis here.
+    ///
+    /// The cursor position is pushed before every phase, not just on press: the
+    /// skin menus (title, song select) drive their hit testing from the shared
+    /// cursor and only emit a Lua `mouse_pressed` when a button is hit, so a
+    /// press without a preceding move never selects anything.
     #[cfg(target_os = "ios")]
     fn handle_touch_as_mouse(&mut self, x: f64, y: f64, phase: crate::platform::input::TouchPhase) {
         use crate::platform::input::TouchPhase;
@@ -1357,13 +1373,25 @@ impl GameMain {
         self.mousex = x;
         self.mousey = y;
 
+        // `CursorMoved` on every phase, matching the desktop synthesis.
+        let moved = Event::WindowEvent {
+            window_id: winit::window::WindowId::dummy(),
+            event: WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(x, y),
+            },
+        };
+        self.scenes
+            .for_each_active_mut(|scene| scene.on_event(&moved));
+
         let state = match phase {
             TouchPhase::Began => ElementState::Pressed,
+            // A drag keeps the button down; only the cursor moves.
             TouchPhase::Moved => return,
             TouchPhase::Ended | TouchPhase::Cancelled => ElementState::Released,
         };
 
-        let event = Event::WindowEvent {
+        let button = Event::WindowEvent {
             window_id: winit::window::WindowId::dummy(),
             event: WindowEvent::MouseInput {
                 device_id: winit::event::DeviceId::dummy(),
@@ -1372,6 +1400,6 @@ impl GameMain {
             },
         };
         self.scenes
-            .for_each_active_mut(|scene| scene.on_event(&event));
+            .for_each_active_mut(|scene| scene.on_event(&button));
     }
 }

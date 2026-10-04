@@ -269,8 +269,17 @@ impl IosApp {
         if self.game.route_egui_touch(id, x, y, phase) {
             return;
         }
-        for event in self.touch.update(id, x, y, phase) {
-            self.game.handle_input_event(event);
+        // On a menu the touch is a pointer, so a drag is turned into knob turns
+        // (song and difficulty wheels). Gameplay keeps the raw touch grid: a
+        // drag there is a laser gesture, not a knob.
+        if self.game.menu_wants_drag() {
+            for event in self.touch.update_menu_drag(id, x, y, phase) {
+                self.game.handle_input_event(event);
+            }
+        } else {
+            for event in self.touch.update(id, x, y, phase) {
+                self.game.handle_input_event(event);
+            }
         }
     }
 }

@@ -56,6 +56,12 @@ pub struct IosTouchState {
     /// Set once any touch in the gesture moves far enough that it should not
     /// count as a tap.
     gesture_moved: bool,
+    /// Active drags that turn into laser (knob) deltas on menu screens. A menu
+    /// has no winit loop to translate a drag into a knob turn, so the average
+    /// horizontal movement of the touched points is fed to both lasers: a
+    /// horizontal swipe is what a player expects to scroll a song wheel or a
+    /// difficulty wheel with.
+    drags: std::collections::HashMap<u64, (f64, f64)>,
 }
 
 impl IosTouchState {
@@ -69,6 +75,7 @@ impl IosTouchState {
             virtual_buttons: true,
             active_touches: std::collections::HashSet::new(),
             gesture_moved: false,
+            drags: std::collections::HashMap::new(),
         }
     }
 
@@ -244,6 +251,52 @@ impl IosTouchState {
                 events
             }
             None => Vec::new(),
+        }
+    }
+
+    /// Turns a menu drag into laser deltas, so a horizontal swipe scrolls the
+    /// song list and changes the difficulty. Returns the events to feed the
+    /// scenes; empty when this is not a menu drag.
+    ///
+    /// Only the horizontal component is used: on a song select screen the left
+    /// and right wheels are scrolled side to side, and using `y` as well made
+    /// vertical jitter nudge the selection.
+    pub fn update_menu_drag(
+        &mut self,
+        id: u64,
+        x: f64,
+        y: f64,
+        phase: TouchPhase,
+    ) -> Vec<UscInputEvent> {
+        use crate::button_codes::LaserState;
+
+        match phase {
+            TouchPhase::Began => {
+                self.drags.insert(id, (x, y));
+                Vec::new()
+            }
+            TouchPhase::Moved => {
+                let Some((start_x, _)) = self.drags.get(&id).copied() else {
+                    return Vec::new();
+                };
+                // Radians per point of travel: a full screen width is about a
+                // full turn, which matches how far a knob has to be turned to
+                // step through the list.
+                let per_point = std::f32::consts::TAU / self.width.max(1.0) as f32;
+                let delta = (x - start_x) as f32 * per_point;
+                self.drags.insert(id, (x, y));
+                if delta == 0.0 {
+                    return Vec::new();
+                }
+                let mut laser = LaserState::default();
+                laser.update_delta(kson::Side::Left, delta);
+                laser.update_delta(kson::Side::Right, delta);
+                vec![UscInputEvent::Laser(laser, std::time::SystemTime::now())]
+            }
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                self.drags.remove(&id);
+                Vec::new()
+            }
         }
     }
 }
