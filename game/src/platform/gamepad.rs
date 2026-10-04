@@ -6,7 +6,7 @@
 //! below, and the frame loop drains them into the same `UscInputEvent` stream
 //! that touch input and the desktop gilrs thread produce.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
@@ -81,6 +81,7 @@ impl GamepadButton {
 
 pub enum GamepadEvent {
     Button(UscButton, ElementState, SystemTime),
+    /// A stick deflection: which knob it turns and its position.
     Axis(Side, f32, SystemTime),
 }
 
@@ -91,6 +92,175 @@ fn queue() -> &'static Mutex<VecDeque<GamepadEvent>> {
 
 fn now() -> SystemTime {
     SystemTime::now()
+}
+
+/// The controllers `GameController.framework` currently has attached.
+///
+/// `gilrs` cannot enumerate them on iPadOS, so the Objective-C layer keeps the
+/// list and publishes it here whenever a controller connects or disconnects.
+fn controllers() -> &'static Mutex<Vec<(u32, String)>> {
+    static CONTROLLERS: OnceLock<Mutex<Vec<(u32, String)>>> = OnceLock::new();
+    CONTROLLERS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Replaces the connected-controller list. Called from the Objective-C
+/// connect/disconnect notifications.
+pub fn set_controllers(list: Vec<(u32, String)>) {
+    if let Ok(mut controllers) = controllers().lock() {
+        *controllers = list;
+    }
+}
+
+/// The connected controllers as `(index, name)`, for the settings screen.
+///
+/// The index is the `controller.playerIndex` value the binding UI uses; the
+/// `GCController` handlers keep that index stable for the controller's whole
+/// session.
+pub fn connected_controllers() -> Vec<(u32, String)> {
+    controllers().lock().map(|c| c.clone()).unwrap_or_default()
+}
+
+/// Records which physical button/axis a `UscButton` is bound to, so the
+/// settings screen can show it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BindingRef {
+    pub kind: BindingKind,
+    pub index: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BindingKind {
+    /// A physical button, identified by its raw button index.
+    Button,
+    /// A stick axis: 0 is the left stick's X, 1 its Y, 2 the right stick's X
+    /// and 3 its Y.
+    Axis,
+}
+
+/// Which knob each physical axis drives.
+///
+/// Only the left stick is used: its vertical axis turns the left knob and its
+/// horizontal axis the right one, matching the on-screen panel.
+pub const AXIS_LEFT_KNOB: i32 = 1;
+pub const AXIS_RIGHT_KNOB: i32 = 0;
+
+fn bindings() -> &'static Mutex<std::collections::HashMap<UscButton, BindingRef>> {
+    static BINDINGS: OnceLock<Mutex<std::collections::HashMap<UscButton, BindingRef>>> =
+        OnceLock::new();
+    BINDINGS.get_or_init(|| Mutex::new(default_bindings()))
+}
+
+/// The out-of-the-box mapping, matching what `KsonGamepad.m` wires up.
+///
+/// Recording it up front means the settings screen shows the defaults instead
+/// of a wall of dashes, and a player can clear an entry they do not want.
+fn default_bindings() -> std::collections::HashMap<UscButton, BindingRef> {
+    let mut map = HashMap::new();
+    let button = |index| BindingRef {
+        kind: BindingKind::Button,
+        index,
+    };
+    let axis = |index| BindingRef {
+        kind: BindingKind::Axis,
+        index,
+    };
+    // Face buttons, shoulders and the menu keys.
+    map.insert(UscButton::BT(kson::BtLane::A), button(0));
+    map.insert(UscButton::BT(kson::BtLane::B), button(1));
+    map.insert(UscButton::BT(kson::BtLane::C), button(2));
+    map.insert(UscButton::BT(kson::BtLane::D), button(3));
+    map.insert(UscButton::FX(Side::Left), button(4));
+    map.insert(UscButton::FX(Side::Right), button(5));
+    map.insert(UscButton::Start, button(6));
+    map.insert(UscButton::Back, button(7));
+    // The left stick drives both knobs.
+    map.insert(UscButton::Laser(Side::Left, Side::Left), axis(AXIS_LEFT_KNOB));
+    map.insert(
+        UscButton::Laser(Side::Right, Side::Left),
+        axis(AXIS_RIGHT_KNOB),
+    );
+    map
+}
+
+/// Binds `button` to a physical button in the Objective-C layer.
+///
+/// The mapping is stored here and applied by `KsonGamepad.m`, which asks for it
+/// whenever a physical button or axis changes; the raw indices are a private
+/// protocol between that file and this module.
+pub fn bind_button(button: UscButton, index: i32) {
+    if let Ok(mut bindings) = bindings().lock() {
+        bindings.insert(
+            button,
+            BindingRef {
+                kind: BindingKind::Button,
+                index,
+            },
+        );
+    }
+}
+
+/// Binds a laser knob to a physical stick axis. See [`bind_button`].
+pub fn bind_axis(button: UscButton, index: i32) {
+    if let Ok(mut bindings) = bindings().lock() {
+        bindings.insert(
+            button,
+            BindingRef {
+                kind: BindingKind::Axis,
+                index,
+            },
+        );
+    }
+}
+
+/// Removes every binding of one controller, so "Clear All" works.
+pub fn clear_bindings() {
+    if let Ok(mut bindings) = bindings().lock() {
+        bindings.clear();
+    }
+}
+
+/// Returns the binding for `button`, if any.
+pub fn binding_for(button: UscButton) -> Option<BindingRef> {
+    bindings().lock().ok().and_then(|b| b.get(&button).copied())
+}
+
+/// Looks up the game button bound to one physical control.
+///
+/// `kind` is 0 for a button and 1 for an axis, mirroring the bridge's numbering;
+/// `index` is the raw button / axis index. Returns -1 when nothing is bound, so
+/// the Objective-C layer can fall back to its built-in mapping.
+pub fn axis_binding_for_raw(kind: i32, index: i32) -> i32 {
+    let wanted = if kind == 0 {
+        BindingKind::Button
+    } else {
+        BindingKind::Axis
+    };
+    let Ok(bindings) = bindings().lock() else {
+        return -1;
+    };
+    let mut found = -1;
+    for (button, binding) in bindings.iter() {
+        if binding.kind == wanted && binding.index == index {
+            found = button_to_raw(*button);
+            break;
+        }
+    }
+    found
+}
+
+/// The raw index of a `UscButton`, matching `GamepadButton::from_raw`.
+fn button_to_raw(button: UscButton) -> i32 {
+    match button {
+        UscButton::BT(kson::BtLane::A) => 0,
+        UscButton::BT(kson::BtLane::B) => 1,
+        UscButton::BT(kson::BtLane::C) => 2,
+        UscButton::BT(kson::BtLane::D) => 3,
+        UscButton::FX(Side::Left) => 4,
+        UscButton::FX(Side::Right) => 5,
+        UscButton::Start => 6,
+        UscButton::Back => 7,
+        _ => -1,
+    }
 }
 
 /// Called from the Objective-C `GCController` handlers.
@@ -110,10 +280,11 @@ pub fn push_button(raw_button: i32, pressed: bool) {
 
 /// Called from the Objective-C `GCController` handlers.
 ///
-/// `side` is 0 for the left stick and 1 for the right, matching the order the
-/// game reads lasers in.
-pub fn push_axis(side: i32, value: f32) {
-    let side = if side == 0 { Side::Left } else { Side::Right };
+/// `knob` is 0 for the left knob and 1 for the right; the gamepad module maps
+/// the physical stick onto them so only the left stick is used: its vertical
+/// axis turns the left knob and its horizontal axis turns the right one.
+pub fn push_axis(knob: i32, value: f32) {
+    let side = if knob == 0 { Side::Left } else { Side::Right };
     if let Ok(mut q) = queue().lock() {
         q.push_back(GamepadEvent::Axis(side, value, now()));
     }

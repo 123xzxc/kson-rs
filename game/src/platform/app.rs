@@ -525,3 +525,60 @@ pub unsafe extern "C" fn kson_ios_gamepad_button(button: i32, pressed: bool) {
 pub unsafe extern "C" fn kson_ios_gamepad_axis(side: i32, value: f32) {
     crate::platform::gamepad::push_axis(side, value);
 }
+
+/// Replaces the list of connected controllers.
+///
+/// `indices` and `names` are parallel arrays: `indices[i]` is the controller's
+/// `playerIndex` and `names[i]` its localised name. The settings screen lists
+/// them, because `gilrs` cannot enumerate controllers on iPadOS.
+///
+/// # Safety
+/// `names` must point at `count` valid NUL-terminated C strings.
+pub unsafe extern "C" fn kson_ios_set_controllers(
+    indices: *const u32,
+    names: *const *const c_char,
+    count: usize,
+) {
+    let mut list = Vec::with_capacity(count);
+    for i in 0..count {
+        let index = *indices.add(i);
+        let name = CStr::from_ptr(*names.add(i))
+            .to_string_lossy()
+            .into_owned();
+        list.push((index, name));
+    }
+    crate::platform::gamepad::set_controllers(list);
+}
+
+/// Reports a physical button press while the settings screen is capturing a
+/// binding. Returns true when it completed a binding.
+///
+/// `index` is the raw button index the Objective-C layer uses for the physical
+/// control; it is stored verbatim and used for the "bound" label.
+///
+/// # Safety
+/// No pointers; safe to call from the `GCController` handler thread.
+pub unsafe extern "C" fn kson_ios_capture_gamepad_button(index: i32) -> bool {
+    crate::settings_screen::capture_gamepad_button(index)
+}
+
+/// Reports a stick deflection while the settings screen is capturing a binding.
+/// Returns true when it completed a binding.
+///
+/// # Safety
+/// No pointers; safe to call from the `GCController` handler thread.
+pub unsafe extern "C" fn kson_ios_capture_gamepad_axis(index: i32) -> bool {
+    crate::settings_screen::capture_gamepad_axis(index)
+}
+
+/// Looks up the physical button bound to one of the game's buttons.
+///
+/// `kind` is 0 for a button and 1 for an axis; the result is -1 when nothing is
+/// bound. The Objective-C layer uses this to forward only the controls the
+/// player actually bound, so the fixed defaults can be overridden.
+///
+/// # Safety
+/// No pointers; safe to call from the `GCController` handler thread.
+pub unsafe extern "C" fn kson_ios_axis_binding(kind: i32, raw_button: i32) -> i32 {
+    crate::platform::gamepad::axis_binding_for_raw(kind, raw_button)
+}

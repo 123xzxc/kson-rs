@@ -110,103 +110,119 @@ impl TouchHelper {
     }
     pub fn new(screen_size: Vec2) -> Self {
         /*
-           Horizontal band across the middle, mirroring the SDVX panel: the two
-           laser columns run down the outer edges, FX-L/A/B/C/D/FX-R form the
-           bottom row, and Start/Back sit above it. The split laser columns
-           (`.:: left, ::. right`) are the two halves of each side's knob.
+           The panel is laid out like the arcade controller the player drew:
+           the two knobs sit at mid height on the left and right edges, the four
+           BT keys run across the centre, the two FX bars sit below them, Start
+           is the pentagon at the top centre, and Back is the knob glyph in the
+           top-right corner. Each knob is one round hit area per side.
 
-           -----------------------
-           |  |      back      |  |
-           |  |----------------|  |
-           |LL|      start     |RL|
-           |  |----------------|  |
-           |  | FX a  b  c  d |  |
-           |--|    |  |  |    |--|
-           |LR| FX |  |  | FX |RR|
-           |  |  L |  |  | R  |  |
-           -----------------------
+           ---------------------------------
+           |                        (back) |
+           |            (start)            |
+           |                               |
+           | (LL)                        (RL)|
+           |        [a] [b] [c] [d]        |
+           |                               |
+           |     [   FX-L   ] [  FX-R  ]   |
+           ---------------------------------
         */
 
-        let col_width = screen_size.x / 6.0;
-        let row_height = screen_size.y / 4.0;
-        // The panel row (FX + BT) is centred vertically so it sits where the
-        // player's hands rest in landscape.
-        let panel_top = row_height * 2.0;
-        let panel_bottom = row_height * 3.0;
-        let key_width = col_width * 0.9;
-        let key_gap = col_width * 0.1;
-        let fx_width = col_width * 0.6;
+        let w = screen_size.x;
+        let h = screen_size.y;
+        let cx = w * 0.5;
+        let cy = h * 0.5;
+
+        // A knob is round: its hit area is the square around the drawn circle,
+        // sized from the shorter screen axis so it stays circular in both
+        // orientations.
+        let knob_radius = (w.min(h) * 0.09).max(40.0);
+        let knob_y = cy;
+        let knob_margin = w * 0.06;
+
+        // Bottom row: BT keys and FX bars, sitting below the knobs.
+        let bt_size = (w.min(h) * 0.085).max(48.0);
+        let bt_gap = bt_size * 0.35;
+        let bt_total = bt_size * 4.0 + bt_gap * 3.0;
+        let bt_y = h * 0.60;
+        let bt_x0 = cx - bt_total * 0.5;
+
+        let fx_width = bt_total * 0.42;
+        let fx_height = bt_size * 0.80;
+        let fx_gap = bt_total * 0.16;
+        let fx_y = h * 0.76;
+        let fx_x0 = cx - (fx_width * 2.0 + fx_gap) * 0.5;
+
+        // Start is the pentagon above the BT row; Back is the small glyph in
+        // the top-right corner.
+        let start_size = (w.min(h) * 0.075).max(44.0);
+        let back_size = (w.min(h) * 0.065).max(40.0);
 
         let mut button_areas: HashMap<UscButton, Rect> = HashMap::new();
 
-        button_areas.insert(
-            UscButton::Laser(kson::Side::Left, kson::Side::Left),
-            rect(0.0, 0.0, col_width, row_height * 2.0),
-        );
+        // One round knob per side, at mid height on the outer edges.
+        for side in [kson::Side::Left, kson::Side::Right] {
+            let knob_cx = if side == kson::Side::Left {
+                knob_margin + knob_radius
+            } else {
+                w - knob_margin - knob_radius
+            };
+            let knob = rect(
+                knob_cx - knob_radius,
+                knob_y - knob_radius,
+                knob_cx + knob_radius,
+                knob_y + knob_radius,
+            );
+            // Every laser quadrant of the side maps onto the same round hit
+            // area, so whichever quadrant code reaches the game this knob is
+            // the one that turns.
+            button_areas.insert(UscButton::Laser(side, kson::Side::Left), knob);
+            button_areas.insert(UscButton::Laser(side, kson::Side::Right), knob);
+        }
 
         button_areas.insert(
-            UscButton::Laser(kson::Side::Left, kson::Side::Right),
-            rect(0.0, row_height * 2.0, col_width, row_height * 4.0),
-        );
-
-        button_areas.insert(
-            UscButton::Laser(kson::Side::Right, kson::Side::Left),
-            rect(col_width * 5.0, 0.0, col_width * 6.0, row_height * 2.0),
-        );
-
-        button_areas.insert(
-            UscButton::Laser(kson::Side::Right, kson::Side::Right),
+            UscButton::Start,
             rect(
-                col_width * 5.0,
-                row_height * 2.0,
-                col_width * 6.0,
-                row_height * 4.0,
+                cx - start_size * 0.5,
+                h * 0.06,
+                cx + start_size * 0.5,
+                h * 0.06 + start_size,
             ),
         );
 
         button_areas.insert(
             UscButton::Back,
-            rect(col_width, 0.0, col_width * 5.0, row_height),
-        );
-
-        button_areas.insert(
-            UscButton::Start,
-            rect(col_width, row_height, col_width * 4.0, row_height * 2.0),
+            rect(
+                w - w * 0.05 - back_size,
+                h * 0.04,
+                w - w * 0.05,
+                h * 0.04 + back_size,
+            ),
         );
 
         for i in 0..4usize {
-            // BT-A..D form one centred row, with a small gap between the keys.
-            let slot = i as f32;
-            let x0 = col_width + slot * col_width + key_gap * 0.5;
+            let x0 = bt_x0 + (bt_size + bt_gap) * i as f32;
             button_areas.insert(
                 UscButton::BT(i.try_into().unwrap()),
-                rect(
-                    x0,
-                    panel_top,
-                    x0 + key_width,
-                    panel_bottom,
-                ),
+                rect(x0, bt_y, x0 + bt_size, bt_y + bt_size),
             );
         }
 
-        // FX panels flank the BT row: FX-L immediately left of BT-A, FX-R
-        // immediately right of BT-D, which is the real panel order.
         button_areas.insert(
             UscButton::FX(kson::Side::Left),
             rect(
-                col_width - fx_width,
-                panel_top,
-                col_width,
-                panel_bottom,
+                fx_x0,
+                fx_y,
+                fx_x0 + fx_width,
+                fx_y + fx_height,
             ),
         );
         button_areas.insert(
             UscButton::FX(kson::Side::Right),
             rect(
-                col_width * 5.0,
-                panel_top,
-                col_width * 5.0 + fx_width,
-                panel_bottom,
+                fx_x0 + fx_width + fx_gap,
+                fx_y,
+                fx_x0 + fx_width * 2.0 + fx_gap,
+                fx_y + fx_height,
             ),
         );
 

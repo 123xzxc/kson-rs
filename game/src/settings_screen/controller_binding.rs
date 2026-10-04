@@ -207,6 +207,90 @@ pub struct KeyboardBindingUi {
     key_names: HashMap<PhysicalKey, String>,
 }
 
+/// Controller binding UI for iOS.
+///
+/// `gilrs` is a stub on iPadOS, so the widgets cannot read the pad state the
+/// desktop `BindingUi` polls. Instead the player taps a key and then presses a
+/// physical button (or flicks a stick): the Objective-C `GCController`
+/// handlers call back into the gamepad module, which records the physical
+/// index here, and `run_checks` turns that into a binding for the selected
+/// controller.
+#[cfg(target_os = "ios")]
+pub struct IosBindingUi {
+    controller: u32,
+    currently_binding: Option<UscButton>,
+}
+
+#[cfg(target_os = "ios")]
+impl IosBindingUi {
+    pub fn new(controller: u32) -> Self {
+        Self {
+            controller,
+            currently_binding: None,
+        }
+    }
+
+    /// Folds a physical button press reported by Objective-C into the binding
+    /// being recorded. Returns `true` when it was consumed.
+    pub fn capture_button(&mut self, raw_index: i32) -> bool {
+        let Some(button) = self.currently_binding.take() else {
+            return false;
+        };
+        crate::platform::gamepad::bind_button(button, raw_index);
+        log::info!("Bound {} to gamepad button {}", button.as_str(), raw_index);
+        true
+    }
+
+    /// Folds a stick deflection into the binding being recorded.
+    pub fn capture_axis(&mut self, axis_index: i32) -> bool {
+        let Some(button) = self.currently_binding.take() else {
+            return false;
+        };
+        crate::platform::gamepad::bind_axis(button, axis_index);
+        log::info!("Bound {} to gamepad axis {}", button.as_str(), axis_index);
+        true
+    }
+
+    pub fn ui(&mut self, ui: &mut egui::Ui, settings: &mut GameConfig) {
+        use crate::platform::gamepad::{binding_for, BindingKind};
+
+        let _ = self.controller;
+        let _ = settings;
+        let stroke = Stroke::new(2.0, egui::Color32::GREEN);
+
+        ui.label("Tap a key, then press the pad button or flick the stick.");
+        ui.end_row();
+
+        egui::Grid::new("ios_controller_binds")
+            .striped(true)
+            .show(ui, |ui| {
+                for binding in UscButton::iter() {
+                    let active = self.currently_binding == Some(binding);
+                    let mut button = egui::Button::new(binding.as_str());
+                    if active {
+                        button = button.stroke(stroke);
+                    }
+                    if ui.add(button).clicked() {
+                        self.currently_binding = if active { None } else { Some(binding) };
+                    }
+
+                    let label = match binding_for(binding).map(|b| (b.kind, b.index)) {
+                        Some((BindingKind::Button, index)) => format!("button {index}"),
+                        Some((BindingKind::Axis, index)) => format!("axis {index}"),
+                        None => "-".to_owned(),
+                    };
+                    ui.label(label);
+                    ui.end_row();
+                }
+            });
+
+        if ui.button("Clear All").clicked() {
+            crate::platform::gamepad::clear_bindings();
+            self.currently_binding = None;
+        }
+    }
+}
+
 impl KeyboardBindingUi {
     pub fn new() -> Self {
         Self {

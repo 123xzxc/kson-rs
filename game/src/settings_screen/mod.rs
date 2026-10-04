@@ -3,6 +3,22 @@ mod controller_binding;
 mod lighting;
 pub mod skin_select;
 
+/// Bridge between the Objective-C `GCController` handlers and the open
+/// settings screen, so a physical button press can be captured as a binding
+/// even though those handlers run on a different thread with no scene access.
+#[cfg(target_os = "ios")]
+static GAMEPAD_CAPTURE: std::sync::Mutex<Option<GamepadCapture>> = std::sync::Mutex::new(None);
+
+/// The action a physical input reports while a binding is being captured.
+#[cfg(target_os = "ios")]
+type CaptureAction =
+    Box<dyn for<'a> FnOnce(&'a mut controller_binding::IosBindingUi) -> bool + Send>;
+
+/// The closure the settings screen installs so the `GCController` handlers can
+/// reach the live binding UI.
+#[cfg(target_os = "ios")]
+type GamepadCapture = Box<dyn Fn(CaptureAction) -> bool + Send>;
+
 use std::{collections::HashMap, path::PathBuf, sync::mpsc::Sender, time::Duration};
 
 use controller_binding::KeyboardBindingUi;
@@ -28,14 +44,25 @@ use crate::{
     skin_settings::SkinSettingValue,
 };
 
+#[cfg(not(target_os = "ios"))]
 use self::controller_binding::BindingUi;
+#[cfg(target_os = "ios")]
+use self::controller_binding::IosBindingUi;
 
 pub struct SettingsScreen {
     altered_settings: GameConfig,
     close: bool,
     input_state: InputState,
     selected_controller: Option<GamepadId>,
+    #[cfg(not(target_os = "ios"))]
     binding_ui: Option<BindingUi>,
+    #[cfg(target_os = "ios")]
+    binding_ui: Option<IosBindingUi>,
+    /// Connected controllers as `(index, name)`. On iOS the list is published
+    /// by the Objective-C `GCController` observers, because `gilrs` cannot
+    /// enumerate pads there.
+    #[cfg(target_os = "ios")]
+    ios_controllers: Vec<(u32, String)>,
     key_binding_ui: KeyboardBindingUi,
     controllers: HashMap<GamepadId, String>,
     monitors: Vec<MonitorHandle>,
@@ -121,6 +148,8 @@ impl SettingsScreen {
             input_state,
             selected_controller: None,
             binding_ui: None,
+            #[cfg(target_os = "ios")]
+            ios_controllers: crate::platform::gamepad::connected_controllers(),
             controllers,
             monitors,
             primary_monitor,
@@ -142,6 +171,8 @@ impl SettingsScreen {
 impl Drop for SettingsScreen {
     fn drop(&mut self) {
         self.input_state.set_text_input_active(false);
+        #[cfg(target_os = "ios")]
+        set_gamepad_capture(None);
     }
 }
 
@@ -184,8 +215,15 @@ impl Scene for SettingsScreen {
         _dt: f64,
         _knob_state: crate::button_codes::LaserState,
     ) -> anyhow::Result<()> {
+        #[cfg(not(target_os = "ios"))]
         if let Some(binding_ui) = self.binding_ui.as_mut() {
             binding_ui.run_checks(&mut self.altered_settings)
+        }
+
+        // A controller can be connected while this screen is open.
+        #[cfg(target_os = "ios")]
+        {
+            self.ios_controllers = crate::platform::gamepad::connected_controllers();
         }
 
         Ok(())
@@ -200,6 +238,23 @@ impl Scene for SettingsScreen {
     }
 
     fn render_egui(&mut self, ctx: &egui::Context) -> anyhow::Result<()> {
+        // Let the Objective-C `GCController` handlers reach this screen while
+        // it captures a binding. The closure is dropped with the screen.
+        #[cfg(target_os = "ios")]
+        {
+            let binding_ui = self.binding_ui.as_mut();
+            let guard = binding_ui.map(|ui| ui as *mut IosBindingUi as usize);
+            set_gamepad_capture(match guard {
+                Some(addr) => Some(Box::new(move |apply| {
+                    // Safety: the capture hook is cleared when the screen drops,
+                    // so it can only be used while the pointer is live.
+                    let binding_ui = unsafe { &mut *(addr as *mut IosBindingUi) };
+                    apply(binding_ui)
+                })),
+                None => None,
+            });
+        }
+
         egui::panel::TopBottomPanel::bottom("settings_buttons").show(ctx, |ui| {
             if ui.button("Cancel").clicked() {
                 self.close = true;
@@ -246,37 +301,78 @@ impl Scene for SettingsScreen {
                     ui.checkbox(&mut self.altered_settings.mouse_knobs, "Mouse knobs");
                     ui.end_row();
 
-                    egui::ComboBox::from_label("Controller")
-                        .selected_text(
-                            self.selected_controller
-                                .and_then(|id| self.controllers.get(&id))
-                                .unwrap_or(&"None".to_string()),
-                        )
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_value(&mut self.selected_controller, None, "None")
-                                .clicked()
-                            {
-                                self.binding_ui = None;
-                            }
-
-                            for (id, name) in self.controllers.iter() {
+                    #[cfg(not(target_os = "ios"))]
+                    if true {
+                        egui::ComboBox::from_label("Controller")
+                            .selected_text(
+                                self.selected_controller
+                                    .and_then(|id| self.controllers.get(&id))
+                                    .unwrap_or(&"None".to_string()),
+                            )
+                            .show_ui(ui, |ui| {
                                 if ui
-                                    .selectable_value(
-                                        &mut self.selected_controller,
-                                        Some(*id),
-                                        name,
-                                    )
+                                    .selectable_value(&mut self.selected_controller, None, "None")
                                     .clicked()
                                 {
-                                    self.binding_ui =
-                                        Some(BindingUi::new(*id, self.input_state.clone()));
+                                    self.binding_ui = None;
                                 }
-                            }
-                        });
-                    ui.end_row();
-                    if let Some(binding_ui) = self.binding_ui.as_mut() {
-                        binding_ui.ui(ui, &mut self.altered_settings);
+
+                                for (id, name) in self.controllers.iter() {
+                                    if ui
+                                        .selectable_value(
+                                            &mut self.selected_controller,
+                                            Some(*id),
+                                            name,
+                                        )
+                                        .clicked()
+                                    {
+                                        self.binding_ui =
+                                            Some(BindingUi::new(*id, self.input_state.clone()));
+                                    }
+                                }
+                            });
+                        ui.end_row();
+                        if let Some(binding_ui) = self.binding_ui.as_mut() {
+                            binding_ui.ui(ui, &mut self.altered_settings);
+                        }
+                    }
+
+                    // On iOS the pads come from `GCController`, not `gilrs`, so
+                    // the dropdown lists the controllers Objective-C published.
+                    #[cfg(target_os = "ios")]
+                    if true {
+                        let selected = self.selected_controller.map(|id| id.0 as u32);
+                        let selected_name = selected
+                            .and_then(|index| {
+                                self.ios_controllers
+                                    .iter()
+                                    .find(|(candidate, _)| *candidate == index)
+                                    .map(|(_, name)| name.clone())
+                            })
+                            .unwrap_or_else(|| "None".to_string());
+                        egui::ComboBox::from_label("Controller")
+                            .selected_text(selected_name)
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_value(&mut self.selected_controller, None, "None")
+                                    .clicked()
+                                {
+                                    self.binding_ui = None;
+                                }
+                                for (index, name) in self.ios_controllers.clone() {
+                                    let id = GamepadId(index as usize);
+                                    if ui
+                                        .selectable_value(&mut self.selected_controller, Some(id), name)
+                                        .clicked()
+                                    {
+                                        self.binding_ui = Some(IosBindingUi::new(index));
+                                    }
+                                }
+                            });
+                        ui.end_row();
+                        if let Some(binding_ui) = self.binding_ui.as_mut() {
+                            binding_ui.ui(ui, &mut self.altered_settings);
+                        }
                     }
                 });
 
@@ -834,6 +930,49 @@ fn aa_text(aa: u8) -> String {
     match aa {
         1 => "Off".into(),
         v => format!("{v}x"),
+    }
+}
+
+/// Records a physical button press while the settings screen is capturing.
+///
+/// The Objective-C `GCController` handler has no route to the live settings
+/// screen, so it lands here through the `kson_ios_capture_gamepad_*` exports.
+/// Returns true when the press completed a binding and should not be forwarded
+/// to the game.
+#[cfg(target_os = "ios")]
+pub fn capture_gamepad_button(index: i32) -> bool {
+    capture_gamepad(move |ui| ui.capture_button(index))
+}
+
+/// Records a stick deflection while the settings screen is capturing. See
+/// [`capture_gamepad_button`].
+#[cfg(target_os = "ios")]
+pub fn capture_gamepad_axis(index: i32) -> bool {
+    capture_gamepad(move |ui| ui.capture_axis(index))
+}
+
+/// Installs the closure the bridge uses to reach the live binding UI. The
+/// settings screen sets it while it is open and clears it on drop.
+#[cfg(target_os = "ios")]
+pub fn set_gamepad_capture(
+    capture: Option<GamepadCapture>,
+) {
+    if let Ok(mut current) = GAMEPAD_CAPTURE.lock() {
+        *current = capture;
+    }
+}
+
+#[cfg(target_os = "ios")]
+fn capture_gamepad(
+    f: impl FnOnce(&mut controller_binding::IosBindingUi) -> bool + Send + 'static,
+) -> bool {
+    let Ok(mut guard) = GAMEPAD_CAPTURE.lock() else {
+        return false;
+    };
+    match guard.as_mut() {
+        // The stored closure maps the action onto the live `IosBindingUi`.
+        Some(apply) => apply(Box::new(f)),
+        None => false,
     }
 }
 
