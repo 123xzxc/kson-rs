@@ -82,7 +82,7 @@ jobs:
           # A `runtime` cdylib needs the app-side GL symbols, which do not
           # exist when the library is linked standalone. iOS only consumes the
           # staticlib, so restrict the emitted crate type here.
-          cargo rustc --release --verbose \
+          cargo rustc --release \
             --target aarch64-apple-ios \
             -p rusc \
             --lib \
@@ -93,38 +93,16 @@ jobs:
 
           LIB="target/aarch64-apple-ios/release/librusc.a"
           test -f "$LIB" || { echo "missing $LIB"; exit 1; }
-          ls -la "$LIB"
           # Xcode 16.4 ships an `nm` that cannot read the LLVM 23 object files
-          # rustc emits, so use an LLVM `nm` when one is available (the macOS
-          # image has LLVM in Homebrew, and rustup can add llvm-tools).
-          NM=""
-          for candidate in \
-            "$(brew --prefix llvm 2>/dev/null)/bin/llvm-nm" \
-            "$(rustc --print sysroot)/lib/rustlib/aarch64-apple-darwin/bin/llvm-nm" \
-            "$(find "$(rustc --print sysroot)" -name 'llvm-nm' -type f 2>/dev/null | head -n 1)"
-          do
-            if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-              NM="$candidate"
-              break
-            fi
+          # rustc emits, and the system `nm` cannot read the archive at all, so
+          # use the LLVM `nm` installed earlier.
+          NM="$(brew --prefix llvm)/bin/llvm-nm"
+          for sym in _kson_ios_init _kson_ios_frame _kson_ios_resize _kson_ios_touch; do
+            "$NM" "$LIB" | grep -q " T ${sym}$" || {
+              echo "${sym} is not defined by ${LIB}"
+              exit 1
+            }
           done
-          [ -n "$NM" ] || { echo "no usable llvm-nm found"; exit 1; }
-          echo "using $NM"
-          echo "--- archive members ---"
-          "$NM" "$LIB" | grep -i "rusc\." | head -n 20 || true
-          echo "--- symbol count in the rusc object ---"
-          "$NM" "$LIB" | awk '/rusc-.*rcgu\.o:/{f=1;next} /^$/{f=0} f' | wc -l
-          echo "--- raw dump of the rusc object (first 20 lines) ---"
-          "$NM" -A "$LIB" | grep "rusc-" | head -n 20 || true
-          echo "--- external symbols mentioning kson ---"
-          "$NM" -g "$LIB" | grep -i "kson" | head -n 20 || true
-          echo "--- all symbols mentioning kson_ios ---"
-          "$NM" "$LIB" | grep -i "kson_ios" | head -n 20 || true
-          "$NM" "$LIB" | grep -q "kson_ios_init" || {
-            echo "librusc.a does not define the kson_ios_* entry points"
-            "$NM" "$LIB" | grep -i 'ios' | head -n 20 || true
-            exit 1
-          }
 
       - name: Generate Xcode project
         working-directory: ios

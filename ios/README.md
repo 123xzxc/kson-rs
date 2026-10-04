@@ -34,16 +34,37 @@ that owns the `EAGLContext`, the display link and touch input.
 ```sh
 # 1. Rust static library for the device
 rustup target add aarch64-apple-ios
-cargo build --release --target aarch64-apple-ios -p rusc --lib \
-    --features embed-assets --no-default-features
+cargo rustc --release --target aarch64-apple-ios -p rusc --lib \
+    --crate-type staticlib \
+    --features embed-assets --no-default-features \
+    -- -C strip=debuginfo -C link-dead-code
 
 # 2. Generate and open the Xcode project
 brew install xcodegen
 cd ios && xcodegen generate && open KsonGame.xcodeproj
 ```
 
-The `Build Rust library` build phase runs the `cargo build` step for you, so in
-Xcode you can normally just hit Run.
+The `Build Rust library` build phase runs the same `cargo rustc` command for
+you, so in Xcode you can normally just hit Run.
+
+### Why the extra flags
+
+- `--crate-type staticlib` – the crate also declares a `cdylib`, whose
+  standalone link cannot resolve the app-side `eagl_*` GL symbols. iOS only
+  consumes the archive.
+- `-C strip=debuginfo` – the workspace sets `strip = true` for Release, which
+  would leave no symbol table for the linker to work with.
+- `-C link-dead-code` – `game/src/lib.rs` re-exports the `kson_ios_*` entry
+  points from `platform::app`, but nothing in the Rust call graph references
+  them (UIKit calls them). Without this the `rusc` object file is emitted
+  empty and `librusc.a` defines no entry points at all.
+
+The Xcode target links the archive with `-lrusc` plus explicit
+`-u _kson_ios_init -u _kson_ios_frame -u _kson_ios_resize -u _kson_ios_touch`
+flags (`OTHER_LDFLAGS` in `project.yml`). The `-u` flags force those archive
+members to be loaded even though only the Objective-C shim references them;
+if the archive did not define them the link would fail with
+`Undefined symbols`.
 
 ## CI
 
