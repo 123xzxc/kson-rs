@@ -167,13 +167,16 @@ impl RenderContext {
         let n = PRESENTS.fetch_add(1, Ordering::Relaxed);
         let (w, h) = self.size();
         let log_this = n < 3 || n % 300 == 0;
-        // Clear any stale error so the value read after presenting describes
-        // *this* frame. Go through glow instead of declaring `glGetError`
-        // ourselves: OpenGL ES symbols are weak imports on iOS and would not
-        // resolve from a Rust static library.
-        if log_this {
-            let _ = unsafe { self.glow.get_error() };
-        }
+        // Probe before and after: an error that is already pending here comes
+        // from the scene rendering, one that appears only after the call comes
+        // from `presentRenderbuffer:` itself. `glGetError` is reached through
+        // glow because OpenGL ES entry points are weak imports on iOS and would
+        // not resolve from a bare `extern "C"` declaration.
+        let before = if log_this {
+            unsafe { self.glow.get_error() }
+        } else {
+            0
+        };
         // The Objective-C side rebinds the drawable framebuffer before calling
         // `presentRenderbuffer:`: EAGL only accepts the call when the color
         // attachment of the bound framebuffer is the drawable's renderbuffer,
@@ -187,10 +190,27 @@ impl RenderContext {
             let bound = unsafe { self.glow.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING) };
             let status = unsafe { self.glow.check_framebuffer_status(glow::FRAMEBUFFER) };
             log::info!(
-                "present #{n} fb={} bound={bound} status=0x{status:x} size={w}x{h} scale={} gl_error=0x{err:x}",
+                "present #{n} fb={} bound={bound} status=0x{status:x} size={w}x{h} scale={} before=0x{before:x} after=0x{err:x}",
                 self.framebuffer,
                 self.scale
             );
+        }
+    }
+
+    /// Drains and returns the pending GL error, if any.
+    ///
+    /// `glGetError` returns one code at a time, so a *persistent* 0x502 across
+    /// frames can come from a different call than the one being probed. The
+    /// staging diagnostics around a frame use this to attribute an error to the
+    /// step that produced it.
+    pub fn drain_error(&self, stage: &str, frame: u64) {
+        use glow::HasContext;
+        if frame >= 3 && frame % 300 != 0 {
+            return;
+        }
+        let err = unsafe { self.glow.get_error() };
+        if err != 0 {
+            log::warn!("frame {frame}: gl error 0x{err:x} at stage `{stage}`");
         }
     }
 }

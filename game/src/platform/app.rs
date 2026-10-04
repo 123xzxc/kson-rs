@@ -185,7 +185,10 @@ impl IosApp {
     }
 
     pub fn frame(&mut self, elapsed_ms: f64) {
+        let frame_no = self.frame_tracker.frames();
+        self.render.drain_error("frame-start", frame_no);
         self.render.bind_framebuffer();
+        self.render.drain_error("after bind_framebuffer", frame_no);
 
         let frame_input = FrameInput {
             events: vec![],
@@ -209,9 +212,11 @@ impl IosApp {
 
         // Scenes are advanced by the same fixed-step loop the desktop uses.
         self.game.update();
+        self.render.drain_error("after game.update", frame_no);
         let _ = self.frame_tracker.tick();
         self.frame_tracker.advance();
         let _exit = self.game.render_ios(frame_input, &mut self.render);
+        self.render.drain_error("after render_ios", frame_no);
     }
 
     pub fn on_touch(&mut self, id: u64, x: f64, y: f64, phase: i32) {
