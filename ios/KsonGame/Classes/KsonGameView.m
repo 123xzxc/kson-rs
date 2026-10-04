@@ -173,7 +173,9 @@ extern void kson_ios_touch(uint64_t touch_id, double x, double y, int32_t phase)
     glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_WIDTH, &drawableW);
     glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_HEIGHT, &drawableH);
     glBindRenderbuffer(GL_RENDERBUFFER, _depthStencilRenderbuffer);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8_OES, drawableW, drawableH);
+    // `GL_DEPTH24_STENCIL8` is core in ES3 (the `_OES` suffix form is ES2-only
+    // extension spelling and is not declared by the ES3 headers).
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, drawableW, drawableH);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, _depthStencilRenderbuffer);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, _depthStencilRenderbuffer);
 
