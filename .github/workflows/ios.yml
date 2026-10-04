@@ -32,6 +32,12 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen
 
+      - name: Add LLVM tools
+        # The Xcode 16.4 `nm` cannot parse the LLVM 23 object files that the
+        # current stable Rust emits, and the macOS image's LLVM bottle is not in
+        # the default prefix, so provide `llvm-nm` explicitly.
+        run: brew install llvm
+
       - name: Make git fetches resilient
         # `kson-rodio-sources` pulls `Drewol/soundtouch-rs`, whose submodule
         # lives on codeberg.org. That host intermittently returns 503, so use
@@ -89,9 +95,21 @@ jobs:
           test -f "$LIB" || { echo "missing $LIB"; exit 1; }
           ls -la "$LIB"
           # Xcode 16.4 ships an `nm` that cannot read the LLVM 23 object files
-          # rustc emits, so use the LLVM tools bundled with the toolchain.
-          NM="$(dirname "$(rustc --print sysroot)")/../bin/llvm-nm"
-          [ -x "$NM" ] || NM=llvm-nm
+          # rustc emits, so use an LLVM `nm` when one is available (the macOS
+          # image has LLVM in Homebrew, and rustup can add llvm-tools).
+          NM=""
+          for candidate in \
+            "$(brew --prefix llvm 2>/dev/null)/bin/llvm-nm" \
+            "$(rustc --print sysroot)/lib/rustlib/aarch64-apple-darwin/bin/llvm-nm" \
+            "$(find "$(rustc --print sysroot)" -name 'llvm-nm' -type f 2>/dev/null | head -n 1)"
+          do
+            if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+              NM="$candidate"
+              break
+            fi
+          done
+          [ -n "$NM" ] || { echo "no usable llvm-nm found"; exit 1; }
+          echo "using $NM"
           "$NM" "$LIB" | grep -q "kson_ios_init" || {
             echo "librusc.a does not define the kson_ios_* entry points"
             "$NM" "$LIB" | grep -i 'ios' | head -n 20 || true
