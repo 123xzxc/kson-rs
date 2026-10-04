@@ -263,12 +263,19 @@ impl IosApp {
 
     pub fn on_touch(&mut self, id: u64, x: f64, y: f64, phase: i32) {
         let phase = crate::platform::input::TouchPhase::from_raw(phase);
+        // UIKit hands us logical points. egui wants points, but the Lua skins
+        // compare the shared cursor against `game.GetResolution()`, which is the
+        // render viewport in physical pixels; on a Retina iPad the two differ by
+        // the scale factor, so a logical-point cursor never lands on a button.
+        // Pass the pixel coordinates the skin path needs.
+        let scale = self.scale as f64;
         // egui-owned screens (settings, downloads) get the raw touch so their
         // widgets can be clicked. Only when egui does not want the pointer does
         // the on-screen button grid see it.
         if self.game.route_egui_touch(id, x, y, phase) {
             return;
         }
+        let (x, y) = (x * scale, y * scale);
         // On a menu the touch is a pointer, so a drag is turned into knob turns
         // (song and difficulty wheels). Gameplay keeps the raw touch grid: a
         // drag there is a laser gesture, not a knob.
