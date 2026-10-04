@@ -1323,18 +1323,30 @@ impl GameMain {
     ///
     /// Returns `true` when egui consumed the touch.
     #[cfg(target_os = "ios")]
-    pub fn route_egui_touch(&mut self, id: u64, x: f64, y: f64, phase: crate::platform::input::TouchPhase) -> bool {
+    pub fn route_egui_touch(
+        &mut self,
+        id: u64,
+        egui_x: f64,
+        egui_y: f64,
+        x: f64,
+        y: f64,
+        phase: crate::platform::input::TouchPhase,
+    ) -> bool {
         use crate::platform::input::TouchPhase;
         if !self.scenes.touch_as_mouse() {
             return false;
         }
+        log::info!(
+            "touch {phase:?} egui=({egui_x:.0},{egui_y:.0}) px=({x:.0},{y:.0}) egui_screen={}",
+            self.scenes.should_render_egui()
+        );
         // egui screens (settings) consume the touch as a real pointer.
         if self.scenes.should_render_egui() {
             match phase {
                 TouchPhase::Began => {
-                    self.gui.touch_begin(id, x as f32, y as f32);
+                    self.gui.touch_begin(id, egui_x as f32, egui_y as f32);
                 }
-                TouchPhase::Moved => self.gui.touch_move(id, x as f32, y as f32),
+                TouchPhase::Moved => self.gui.touch_move(id, egui_x as f32, egui_y as f32),
                 TouchPhase::Ended | TouchPhase::Cancelled => self.gui.touch_end(id),
             }
         }

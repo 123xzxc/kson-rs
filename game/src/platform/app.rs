@@ -53,6 +53,14 @@ pub struct IosApp {
     // async runtime that song loading and downloads run on.
     _sink: rodio::MixerDeviceSink,
     _runtime: tokio::runtime::Runtime,
+    /// Touch events buffered by the UIKit callback.
+    ///
+    /// The skin screens set their hover target while the Lua `render` runs, and
+    /// `mouse_pressed` only acts on that hover state. A touch arriving between
+    /// frames would therefore be delivered before the frame that establishes
+    /// the hover, and be swallowed. Buffer the touches and deliver them at the
+    /// start of the next frame, after the previous frame's render has run.
+    pending_touches: Vec<(u64, f64, f64, crate::platform::input::TouchPhase)>,
 }
 
 impl IosApp {
@@ -192,6 +200,7 @@ impl IosApp {
             width,
             height,
             scale,
+            pending_touches: Vec::new(),
             _sink: sink,
             _runtime: runtime,
         })
@@ -242,6 +251,7 @@ impl IosApp {
         self.render.drain_error("after game.update", frame_no);
         let _ = self.frame_tracker.tick();
         self.frame_tracker.advance();
+        self.flush_pending_touches();
         let _exit = self.game.render_ios(frame_input, &mut self.render);
 
         // The on-screen controller is drawn after the scenes but before egui,
@@ -263,19 +273,32 @@ impl IosApp {
 
     pub fn on_touch(&mut self, id: u64, x: f64, y: f64, phase: i32) {
         let phase = crate::platform::input::TouchPhase::from_raw(phase);
+        match phase {
+            // A move only sets the cursor; deliver it at once so the following
+            // frame's Lua `render` computes the hover for this position.
+            crate::platform::input::TouchPhase::Moved => self.route_touch(id, x, y, phase),
+            // A down/up is acted on by the skin through the hover target set by
+            // the previous frame's render, so hold it back one frame. Delivering
+            // it now (before that render) finds `hovered` still nil and the tap
+            // is swallowed.
+            _ => self.pending_touches.push((id, x, y, phase)),
+        }
+    }
+
+    /// Routes one touch. `x`/`y` are UIKit logical points.
+    fn route_touch(&mut self, id: u64, x: f64, y: f64, phase: crate::platform::input::TouchPhase) {
         // UIKit hands us logical points. egui wants points, but the Lua skins
         // compare the shared cursor against `game.GetResolution()`, which is the
         // render viewport in physical pixels; on a Retina iPad the two differ by
         // the scale factor, so a logical-point cursor never lands on a button.
-        // Pass the pixel coordinates the skin path needs.
         let scale = self.scale as f64;
-        // egui-owned screens (settings, downloads) get the raw touch so their
-        // widgets can be clicked. Only when egui does not want the pointer does
-        // the on-screen button grid see it.
-        if self.game.route_egui_touch(id, x, y, phase) {
+        let (px, py) = (x * scale, y * scale);
+        // egui-owned screens (settings, downloads) get the raw logical points so
+        // their widgets can be clicked; the skin screens get render pixels.
+        if self.game.route_egui_touch(id, x, y, px, py, phase) {
             return;
         }
-        let (x, y) = (x * scale, y * scale);
+        let (x, y) = (px, py);
         // On a menu the touch is a pointer, so a drag is turned into knob turns
         // (song and difficulty wheels). Gameplay keeps the raw touch grid: a
         // drag there is a laser gesture, not a knob.
@@ -287,6 +310,17 @@ impl IosApp {
             for event in self.touch.update(id, x, y, phase) {
                 self.game.handle_input_event(event);
             }
+        }
+    }
+
+    /// Delivers the down/up touches held back by [`Self::on_touch`].
+    ///
+    /// Called at the start of a frame, after `game.update()` and before
+    /// `render_ios`, so the previous frame's Lua `render` has already picked the
+    /// hover target the press needs.
+    fn flush_pending_touches(&mut self) {
+        for (id, x, y, phase) in std::mem::take(&mut self.pending_touches) {
+            self.route_touch(id, x, y, phase);
         }
     }
 }
