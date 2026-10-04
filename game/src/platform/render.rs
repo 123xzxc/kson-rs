@@ -9,10 +9,39 @@
 //! same EAGL context, so this struct deliberately does not hold a second copy.
 
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use glow::Context;
+
+/// The EAGL framebuffer that owns the `CAEAGLLayer` color renderbuffer.
+///
+/// EAGL has no default framebuffer 0; the app must create one and attach the
+/// drawable renderbuffer. Library code (`three-d`) however renders to
+/// "framebuffer 0" when it targets the screen, which on iOS silently discards
+/// every draw call and leaves `GL_INVALID_OPERATION` behind. The loader below
+/// rewrites those binds to this id, so the shared render path works unchanged.
+static EAGL_FRAMEBUFFER: AtomicU32 = AtomicU32::new(0);
+
+/// C-ABI wrapper installed in place of the real `glBindFramebuffer`.
+///
+/// `three-d` binds framebuffer 0 to mean "the screen". On EAGL that id does not
+/// exist, so redirect it to the drawable framebuffer that `KsonGameView`
+/// created. All other ids (femtovg's own FBOs, render targets) pass through.
+unsafe extern "C" fn ios_bind_framebuffer(target: u32, framebuffer: u32) {
+    let eagl = EAGL_FRAMEBUFFER.load(Ordering::Relaxed);
+    let framebuffer = if framebuffer == 0 && eagl != 0 {
+        eagl
+    } else {
+        framebuffer
+    };
+    if let Some(real) = REAL_BIND_FRAMEBUFFER {
+        real(target, framebuffer);
+    }
+}
+
+static mut REAL_BIND_FRAMEBUFFER: Option<unsafe extern "C" fn(u32, u32)> = None;
 
 pub struct RenderContext {
     glow: Arc<Context>,
@@ -38,7 +67,26 @@ impl RenderContext {
             return Err(anyhow!("null EAGLContext"));
         }
 
+        EAGL_FRAMEBUFFER.store(framebuffer, Ordering::Relaxed);
+
         let glow = Arc::new(Context::from_loader_function_cstr(|s| {
+            if s.to_bytes() == b"glBindFramebuffer" {
+                // Capture the real entry point once, then hand `three-d` the
+                // redirection wrapper so "framebuffer 0 == the screen" keeps
+                // working on EAGL.
+                let real = eagl_get_proc_address(eagl_context, s.as_ptr())
+                    as *const c_void;
+                if !real.is_null() {
+                    unsafe {
+                        REAL_BIND_FRAMEBUFFER = Some(std::mem::transmute::<
+                            *const c_void,
+                            unsafe extern "C" fn(u32, u32),
+                        >(real));
+                    }
+                    return ios_bind_framebuffer as *const c_void;
+                }
+                return real;
+            }
             eagl_get_proc_address(eagl_context, s.as_ptr()) as *const _
         }));
 
@@ -118,6 +166,15 @@ impl RenderContext {
                 self.framebuffer,
                 self.scale
             );
+        }
+        // femtovg leaves its own framebuffer bound after flushing. EAGL's
+        // `presentRenderbuffer:` only works when the drawable's renderbuffer is
+        // attached to the *currently bound* framebuffer, so rebind ours right
+        // before presenting (this is what produced GL_INVALID_OPERATION 0x502).
+        unsafe {
+            if let Some(real) = REAL_BIND_FRAMEBUFFER {
+                real(0x8D40 /* GL_FRAMEBUFFER */, self.framebuffer);
+            }
         }
         unsafe { eagl_present_renderbuffer(self.eagl) }
     }

@@ -86,6 +86,11 @@ extern void kson_ios_touch(uint64_t touch_id, double x, double y, int32_t phase)
 
     CAEAGLLayer *layer = (CAEAGLLayer *)self.layer;
     layer.opaque = YES;
+    // Without this the backbuffer is allocated in *logical* points (e.g.
+    // 1373x954 on a 2x iPad), so the game renders into a quarter-size surface
+    // while the screen is 2x. The Rust side reads this size back from the
+    // renderbuffer, so the viewport and the presented surface disagreed.
+    layer.contentsScale = self.contentScaleFactor;
     layer.drawableProperties = @{
         kEAGLDrawablePropertyRetainedBacking: @NO,
         kEAGLDrawablePropertyColorFormat: kEAGLColorFormatRGBA8,

@@ -229,10 +229,15 @@ pub unsafe extern "C" fn kson_ios_init(
     paths::set_container(PathBuf::from(&container));
     paths::set_bundle_resource_dir(PathBuf::from(&bundle));
 
-    // There is no logcat on iOS, so log to a file inside the container (visible
-    // through Files.app) and record panics there too. Without this a crash
-    // before the first frame leaves no trace at all.
+    // Record the resolved sandbox layout in the log file: `NSLog` output from
+    // the Objective-C layer goes to the system console, which is not reachable
+    // from a sideloaded app, so this is the only way to see what the host
+    // actually handed us (LiveContainer rewrites these paths).
     init_logging();
+    info!(
+        "container={container} bundle={bundle} game_dir={:?} fb={framebuffer} size={width}x{height} scale={scale}",
+        installer::default_game_dir()
+    );
 
     if let Err(e) = crate::platform::paths::bootstrap_game_dir() {
         warn!("Failed to install game assets: {e}");
