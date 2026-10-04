@@ -65,6 +65,30 @@ mod ios_exports {
     pub unsafe extern "C" fn kson_ios_gamepad_axis(side: i32, value: f32) {
         crate::platform::app::kson_ios_gamepad_axis(side, value)
     }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn kson_ios_set_controllers(
+        indices: *const u32,
+        names: *const *const c_char,
+        count: usize,
+    ) {
+        crate::platform::app::kson_ios_set_controllers(indices, names, count)
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn kson_ios_capture_gamepad_button(index: i32) -> bool {
+        crate::platform::app::kson_ios_capture_gamepad_button(index)
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn kson_ios_capture_gamepad_axis(index: i32) -> bool {
+        crate::platform::app::kson_ios_capture_gamepad_axis(index)
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn kson_ios_axis_binding(kind: i32, raw_button: i32) -> i32 {
+        crate::platform::app::kson_ios_axis_binding(kind, raw_button)
+    }
 }
 
 #[cfg(target_os = "android")]
