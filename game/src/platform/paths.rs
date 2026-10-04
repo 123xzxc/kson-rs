@@ -44,12 +44,23 @@ pub fn bundle_resource_dir() -> PathBuf {
 pub fn bootstrap_game_dir() -> anyhow::Result<()> {
     let game_dir = crate::installer::default_game_dir();
 
+    // Preferred path: unpack the assets baked into the binary by the
+    // `embed-assets` feature. iOS has no writable copy of the bundle's
+    // resources, and `skins/` has to be readable from an ordinary path because
+    // the Lua skin scripts are loaded at runtime.
+    crate::installer::init_game_dir(&game_dir)?;
+
+    // Fallback for builds without `embed-assets`: copy whatever the Xcode
+    // bundle happens to contain (populated from `game/skins` and `game/fonts`).
     for folder in ["skins", "fonts"] {
         let source = bundle_resource_dir().join(folder);
         if !source.exists() {
             continue;
         }
         let target = game_dir.join(folder);
+        if target.exists() {
+            continue;
+        }
         copy_dir_recursive(&source, &target)?;
     }
 

@@ -155,7 +155,14 @@ extern void kson_ios_touch(uint64_t touch_id, double x, double y, int32_t phase)
 
 - (void)tick:(CADisplayLink *)link {
     if (!_initialized) {
-        [self initializeRust];
+        if (![self initializeRust]) {
+            // Initialization failed (missing assets, audio device, GL setup).
+            // Stop the display link so the failure is not retried every frame,
+            // and leave `_initialized` NO so no frame/touch call can reach
+            // half-built Rust state.
+            [self stopAnimation];
+            return;
+        }
         _initialized = YES;
         _lastTimestamp = link.timestamp;
         return;
@@ -166,7 +173,7 @@ extern void kson_ios_touch(uint64_t touch_id, double x, double y, int32_t phase)
     kson_ios_frame(elapsedMs);
 }
 
-- (void)initializeRust {
+- (BOOL)initializeRust {
     [EAGLContext setCurrentContext:_context];
     glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
 
@@ -176,13 +183,13 @@ extern void kson_ios_touch(uint64_t touch_id, double x, double y, int32_t phase)
     GLint width = [self drawableWidth];
     GLint height = [self drawableHeight];
 
-    kson_ios_init(container.fileSystemRepresentation,
-                  resources.fileSystemRepresentation,
-                  (__bridge void *)_context,
-                  _framebuffer,
-                  (uint32_t)width,
-                  (uint32_t)height,
-                  (float)self.contentScaleFactor);
+    return kson_ios_init(container.fileSystemRepresentation,
+                         resources.fileSystemRepresentation,
+                         (__bridge void *)_context,
+                         _framebuffer,
+                         (uint32_t)width,
+                         (uint32_t)height,
+                         (float)self.contentScaleFactor);
 }
 
 #pragma mark - Touch handling

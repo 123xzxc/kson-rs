@@ -221,14 +221,15 @@ pub unsafe extern "C" fn kson_ios_init(
     height: u32,
     scale: f32,
 ) -> bool {
-    android_logger::init_once(
-        android_logger::Config::default().with_max_level(log::LevelFilter::Info),
-    );
-
     let container = CStr::from_ptr(container_path).to_string_lossy().into_owned();
     let bundle = CStr::from_ptr(bundle_path).to_string_lossy().into_owned();
     paths::set_container(PathBuf::from(&container));
     paths::set_bundle_resource_dir(PathBuf::from(&bundle));
+
+    // There is no logcat on iOS, so log to a file inside the container (visible
+    // through Files.app) and record panics there too. Without this a crash
+    // before the first frame leaves no trace at all.
+    init_logging(&container);
 
     if let Err(e) = crate::platform::paths::bootstrap_game_dir() {
         warn!("Failed to install game assets: {e}");
@@ -271,6 +272,74 @@ pub unsafe extern "C" fn kson_ios_init(
             false
         }
     }
+}
+
+/// Installs a file logger plus a panic hook rooted at `<container>/Documents/USC`.
+///
+/// `android_logger` is a no-op on iOS and the system console is not reachable
+/// from the app sandbox, so the log file is the only place crash details can
+/// be recovered from on a device.
+fn init_logging(container: &str) {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+
+    INIT.call_once(|| {
+        let mut dir = PathBuf::from(container);
+        dir.push("Documents");
+        dir.push("USC");
+        let _ = std::fs::create_dir_all(&dir);
+        let log_path = dir.join("ios.log");
+
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            static SINK: std::sync::OnceLock<std::sync::Mutex<std::fs::File>> =
+                std::sync::OnceLock::new();
+            let _ = SINK.set(std::sync::Mutex::new(file));
+
+            struct FileLogger;
+            impl log::Log for FileLogger {
+                fn enabled(&self, _: &log::Metadata) -> bool {
+                    true
+                }
+                fn log(&self, record: &log::Record) {
+                    use std::io::Write;
+                    if let Some(sink) = SINK.get() {
+                        if let Ok(mut f) = sink.lock() {
+                            let _ = writeln!(
+                                f,
+                                "[{}] [{}] {}",
+                                record.level(),
+                                record.target(),
+                                record.args()
+                            );
+                            let _ = f.flush();
+                        }
+                    }
+                }
+                fn flush(&self) {}
+            }
+            static LOGGER: FileLogger = FileLogger;
+            let _ = log::set_logger(&LOGGER);
+            log::set_max_level(log::LevelFilter::Info);
+        }
+
+        // Panics otherwise unwind into C/Objective-C, where the message is lost.
+        let panic_path = log_path.clone();
+        std::panic::set_hook(Box::new(move |info| {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&panic_path)
+            {
+                let _ = writeln!(f, "[PANIC] {info}");
+                let _ = f.flush();
+            }
+        }));
+    });
 }
 
 static mut APP: Option<IosApp> = None;

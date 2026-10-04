@@ -173,15 +173,37 @@ impl Vgfx {
 
             let mut font_dir = game_folder.clone();
             font_dir.push("fonts");
-            let default_fonts = canvas
-                .add_font_dir(&font_dir)
-                .expect("Failed to load default fonts");
+            // Missing fonts must not abort the process: `add_font_dir` errors
+            // when the directory does not exist, which happens if the bundled
+            // assets were not copied into the container. A visible warning is
+            // far more useful than a crash on start-up.
+            let default_fonts = canvas.add_font_dir(&font_dir).unwrap_or_else(|e| {
+                log::error!(
+                    "Failed to load default fonts from {:?}: {e}",
+                    font_dir
+                );
+                Vec::new()
+            });
             font_dir.push("settings");
-            _ = canvas
-                .add_font_dir(&font_dir)
-                .expect("Failed to load settings fonts");
+            if let Err(e) = canvas.add_font_dir(&font_dir) {
+                log::warn!("Failed to load settings fonts from {:?}: {e}", font_dir);
+            }
 
             default_fonts
+        };
+
+        // Resolve the label font before `canvas` is moved into the struct.
+        // When no font was found on disk, fall back to the one compiled into
+        // the binary so the renderer still has a valid id; text may look wrong
+        // but the game keeps running instead of aborting on start-up.
+        let label_font = match default_fonts.first().copied() {
+            Some(font) => font,
+            None => {
+                let mut canvas = canvas.lock().expect("Lock error");
+                canvas
+                    .add_font_mem(include_bytes!("../fonts/NotoSans-Regular.ttf"))
+                    .expect("embedded fallback font must be valid")
+            }
         };
 
         let config = &GameConfig::get();
@@ -211,7 +233,7 @@ impl Vgfx {
             scoped_assets: Default::default(),
             image_tint: None,
             label_color: Color::white(),
-            label_font: *default_fonts.first().expect("No default font loaded"),
+            label_font,
             label_align: (femtovg::Align::Left, femtovg::Baseline::Alphabetic),
             _skin_meta: skin_meta,
         }
