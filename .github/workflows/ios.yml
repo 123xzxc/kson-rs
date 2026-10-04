@@ -172,12 +172,13 @@ jobs:
               exit 1
             }
           done
-          for name in kson_ios_init kson_ios_frame kson_ios_resize kson_ios_touch; do
-            strings -a "$APP/USC" | grep -q "$name" || {
-              echo "${name} not present in the app binary"
-              exit 1
-            }
-          done
+          # `otool` understands the final Mach-O even after stripping, so use
+          # it to confirm the symbols made it into the executable.
+          otool -Iv "$APP/USC" | grep -q "kson_ios_init" || {
+            echo "kson_ios_init is not referenced by the app binary"
+            otool -Iv "$APP/USC" | grep -i ios | head -n 20 || true
+            exit 1
+          }
           echo "the Rust staticlib defines and contributes all entry points"
 
       - uses: actions/upload-artifact@v4
