@@ -44,10 +44,14 @@ jobs:
         env:
           IPHONEOS_DEPLOYMENT_TARGET: "15.0"
         run: |
-          cargo build --release \
+          # A `runtime` cdylib needs the app-side GL symbols, which do not
+          # exist when the library is linked standalone. iOS only consumes the
+          # staticlib, so restrict the emitted crate type here.
+          cargo rustc --release \
             --target aarch64-apple-ios \
             -p rusc \
             --lib \
+            --crate-type staticlib \
             --features embed-assets \
             --no-default-features
 

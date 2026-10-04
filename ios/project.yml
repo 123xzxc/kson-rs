@@ -51,5 +51,10 @@ targets:
           export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-15.0}"
           # `--no-default-features` keeps SoundTouch (a desktop-only C++
           # dependency) out of the iOS build.
-          cargo build --release --target aarch64-apple-ios -p rusc --lib \
+          #
+          # Use `cargo rustc --crate-type staticlib`: the crate also declares
+          # `cdylib`, whose standalone link cannot resolve the app-side GL
+          # symbols.
+          cargo rustc --release --target aarch64-apple-ios -p rusc --lib \
+            --crate-type staticlib \
             --features embed-assets --no-default-features
