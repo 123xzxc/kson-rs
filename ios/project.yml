@@ -30,13 +30,6 @@ targets:
       - path: KsonGame/Classes
       - path: KsonGame/Resources
         buildPhase: resources
-      # The game reads `skins/` and `fonts/` from disk at runtime, so they
-      # have to ship inside the bundle; `bootstrap_game_dir` copies them into
-      # the writable container on first launch.
-      - path: ../game/skins
-        buildPhase: resources
-      - path: ../game/fonts
-        buildPhase: resources
     info:
       path: KsonGame/Info.plist
     settings:
