@@ -169,6 +169,10 @@ jobs:
         run: |
           APP="$RUNNER_TEMP/KsonGame.xcarchive/Products/Applications/USC.app"
           test -f "$APP/USC" || { echo "missing executable"; exit 1; }
+          echo "--- kson symbols in the app binary ---"
+          nm -A "$APP/USC" | grep -i kson | head -n 20 || echo "(none)"
+          echo "--- ios symbols in the app binary ---"
+          nm -A "$APP/USC" | grep -i "kson_ios" | head -n 20 || echo "(none)"
           for sym in _kson_ios_init _kson_ios_frame _kson_ios_resize _kson_ios_touch; do
             if ! nm -A "$APP/USC" | grep -q " ${sym}$"; then
               echo "missing ${sym}: the Rust staticlib was not linked in"
