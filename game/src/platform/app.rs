@@ -84,7 +84,10 @@ impl IosApp {
             let mut canvas = femtovg::Canvas::new(renderer)
                 .map_err(|e| anyhow::anyhow!("canvas init failed: {e}"))?;
             canvas.set_size(render.size().0, render.size().1, scale);
-            Arc::new(Mutex::new(canvas))
+            // `Vgfx::inject` resolves a bare `Mutex<Canvas<OpenGl>>` (the same
+            // service the desktop window path registers), so wrap it exactly
+            // like `window::create_window` does.
+            Mutex::new(canvas)
         };
 
         let services = ServiceCollection::new()
@@ -229,7 +232,7 @@ pub unsafe extern "C" fn kson_ios_init(
     // There is no logcat on iOS, so log to a file inside the container (visible
     // through Files.app) and record panics there too. Without this a crash
     // before the first frame leaves no trace at all.
-    init_logging(&container);
+    init_logging();
 
     if let Err(e) = crate::platform::paths::bootstrap_game_dir() {
         warn!("Failed to install game assets: {e}");
@@ -279,14 +282,14 @@ pub unsafe extern "C" fn kson_ios_init(
 /// `android_logger` is a no-op on iOS and the system console is not reachable
 /// from the app sandbox, so the log file is the only place crash details can
 /// be recovered from on a device.
-fn init_logging(container: &str) {
+fn init_logging() {
     use std::sync::Once;
     static INIT: Once = Once::new();
 
     INIT.call_once(|| {
-        let mut dir = PathBuf::from(container);
-        dir.push("Documents");
-        dir.push("USC");
+        // `set_container` already resolved the game directory, so reuse it
+        // instead of rebuilding it from the sandbox root.
+        let dir = installer::default_game_dir();
         let _ = std::fs::create_dir_all(&dir);
         let log_path = dir.join("ios.log");
 

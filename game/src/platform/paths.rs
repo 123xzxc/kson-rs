@@ -13,9 +13,19 @@ pub static CONTAINER_DIR: OnceLock<PathBuf> = OnceLock::new();
 pub static BUNDLE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// Called from `kson_ios_init` with `NSHomeDirectory()`.
-pub fn set_container(dir: PathBuf) {
-    let _ = CONTAINER_DIR.set(dir.clone());
-    let _ = crate::installer::GAME_DIR_OVERRIDE.set(dir);
+///
+/// `GAME_DIR_OVERRIDE` is the directory the game reads and writes (config,
+/// skins, fonts, charts, cache), *not* the sandbox root: the desktop builds
+/// resolve it to `<home>/Documents/USC`, so iOS matches that layout under the
+/// app container. Using the bare home directory here made `Main.cfg` and the
+/// extracted assets land in unrelated locations.
+pub fn set_container(home: PathBuf) {
+    let _ = CONTAINER_DIR.set(home.clone());
+
+    let mut game_dir = home;
+    game_dir.push("Documents");
+    game_dir.push("USC");
+    let _ = crate::installer::GAME_DIR_OVERRIDE.set(game_dir);
 }
 
 /// Called from `kson_ios_init` with `NSBundle.mainBundle.resourcePath`, where
