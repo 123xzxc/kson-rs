@@ -12,7 +12,7 @@ use std::{
 use anyhow::Context;
 use di::{RefMut, ServiceProvider};
 use femtovg::Paint;
-use log::info;
+use log::{error, info};
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
     event,
@@ -1152,15 +1152,28 @@ impl GameMain {
                     _ => {}
                 },
                 ControlMessage::Song { diff, loader, song, autoplay } => {
-                    if let Ok(_arena) = lua_arena.read() {
-                        scenes.transition = Transition::new(
+                    // A song can only start if the transition scene is built
+                    // successfully; when it fails the player is left staring at
+                    // song select with no feedback, so say why.
+                    info!(
+                        "starting song `{}` diff={diff} autoplay={autoplay:?}",
+                        song.title
+                    );
+                    match lua_arena.read() {
+                        Ok(_arena) => {
+                            match Transition::new(
                             transition_song_lua.clone(),
                             ControlMessage::Song { diff, loader, song, autoplay },
                             vgfx.clone(),
                             frame_input.viewport,
                             service_provider.create_scope(),
                         )
-                        .ok();
+                            {
+                                Ok(t) => scenes.transition = Some(t),
+                                Err(e) => error!("Failed to build song transition: {e}"),
+                            }
+                        }
+                        Err(e) => error!("Lua arena lock failed, cannot start song: {e}"),
                     }
                 }
                 ControlMessage::Result {

@@ -30,6 +30,7 @@ use crate::platform::input::IosTouchState;
 use crate::platform::paths;
 use crate::platform::render::RenderContext;
 use crate::platform::time::FrameTracker;
+use crate::scene::Scene;
 use crate::song_provider;
 use crate::songselect::{SongProviderSelection, SongSelect, SongSelectScene};
 use crate::vg_ui::Vgfx;
@@ -146,11 +147,20 @@ impl IosApp {
 
         let mut scenes = Scenes::new();
         if GameConfig::get().args.chart.is_none() {
-            let songsel = Box::new(SongSelectScene::new(
-                Box::new(SongSelect::new(SongProviderSelection::Nautica)),
-                services.create_scope(),
-            ));
-            scenes.loaded.push(songsel);
+            // Match the desktop start-up order: the title screen is pushed
+            // first and suspended, and song select only becomes the visible
+            // scene when the player picks it. Going straight to song select
+            // skipped the main menu entirely.
+            let mut title = Box::new(crate::main_menu::MainMenu::new(services.create_scope()));
+            title.suspend();
+            scenes.loaded.push(title);
+            if GameConfig::get().args.notitle {
+                let songsel = Box::new(SongSelectScene::new(
+                    Box::new(SongSelect::new(SongProviderSelection::Nautica)),
+                    services.create_scope(),
+                ));
+                scenes.loaded.push(songsel);
+            }
         }
 
         let game = GameMain::new(
