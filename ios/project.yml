@@ -60,6 +60,10 @@ targets:
           # Use `cargo rustc --crate-type staticlib`: the crate also declares
           # `cdylib`, whose standalone link cannot resolve the app-side GL
           # symbols.
+          # `-C strip=debuginfo` (instead of the profile's `strip=true`) keeps
+          # the symbol table, which `FORCE_LOAD_SYMBOLS` and Xcode's archive
+          # inspection rely on.
           cargo rustc --release --target aarch64-apple-ios -p rusc --lib \
             --crate-type staticlib \
-            --features embed-assets --no-default-features
+            --features embed-assets --no-default-features \
+            -- -C strip=debuginfo

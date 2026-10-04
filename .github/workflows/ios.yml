@@ -82,17 +82,19 @@ jobs:
             --lib \
             --crate-type staticlib \
             --features embed-assets \
-            --no-default-features
+            --no-default-features \
+            -- -C strip=debuginfo
 
           LIB="target/aarch64-apple-ios/release/librusc.a"
           test -f "$LIB" || { echo "missing $LIB"; exit 1; }
           ls -la "$LIB"
-          # `-g` lists the external symbols each archive member defines. If the
-          # Rust entry points are missing here the staticlib never made it to
-          # the path Xcode links against.
-          nm -g "$LIB" | grep -c "kson_ios" | grep -qv '^0$' || {
+          # Xcode 16.4 ships an `nm` that cannot read the LLVM 23 object files
+          # rustc emits, so use the LLVM tools bundled with the toolchain.
+          NM="$(dirname "$(rustc --print sysroot)")/../bin/llvm-nm"
+          [ -x "$NM" ] || NM=llvm-nm
+          "$NM" "$LIB" | grep -q "kson_ios_init" || {
             echo "librusc.a does not define the kson_ios_* entry points"
-            nm -g "$LIB" | grep -i 'ios' | head -n 20 || true
+            "$NM" "$LIB" | grep -i 'ios' | head -n 20 || true
             exit 1
           }
 
