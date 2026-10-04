@@ -248,6 +248,23 @@ pub fn axis_binding_for_raw(kind: i32, index: i32) -> i32 {
     found
 }
 
+/// Which physical axis should turn one of the two knobs.
+///
+/// The knob is a `UscButton::Laser`, whose encoding has nothing to do with the
+/// `GamepadButton` numbering, so this is a direct lookup rather than a
+/// [`button_to_raw`] round-trip. Returns -1 when the knob has no axis binding
+/// and the built-in mapping should be used.
+pub fn axis_for_knob(side: Side) -> i32 {
+    let Ok(bindings) = bindings().lock() else {
+        return -1;
+    };
+    bindings
+        .get(&UscButton::Laser(side, Side::Left))
+        .filter(|binding| binding.kind == BindingKind::Axis)
+        .map(|binding| binding.index)
+        .unwrap_or(-1)
+}
+
 /// The raw index of a `UscButton`, matching `GamepadButton::from_raw`.
 fn button_to_raw(button: UscButton) -> i32 {
     match button {

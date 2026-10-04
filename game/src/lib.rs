@@ -89,6 +89,11 @@ mod ios_exports {
     pub unsafe extern "C" fn kson_ios_axis_binding(kind: i32, raw_button: i32) -> i32 {
         crate::platform::app::kson_ios_axis_binding(kind, raw_button)
     }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn kson_ios_knob_axis(side: i32) -> i32 {
+        crate::platform::app::kson_ios_knob_axis(side)
+    }
 }
 
 #[cfg(target_os = "android")]

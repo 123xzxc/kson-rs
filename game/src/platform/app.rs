@@ -582,3 +582,16 @@ pub unsafe extern "C" fn kson_ios_capture_gamepad_axis(index: i32) -> bool {
 pub unsafe extern "C" fn kson_ios_axis_binding(kind: i32, raw_button: i32) -> i32 {
     crate::platform::gamepad::axis_binding_for_raw(kind, raw_button)
 }
+
+/// Which physical axis turns one of the two knobs.
+///
+/// `side` is 0 for the left knob and 1 for the right; the result is -1 when the
+/// knob has no bound axis. A knob is a laser, not a numbered gamepad button, so
+/// it cannot go through [`kson_ios_axis_binding`].
+///
+/// # Safety
+/// No pointers; safe to call from the `GCController` handler thread.
+pub unsafe extern "C" fn kson_ios_knob_axis(side: i32) -> i32 {
+    let side = if side == 0 { kson::Side::Left } else { kson::Side::Right };
+    crate::platform::gamepad::axis_for_knob(side)
+}

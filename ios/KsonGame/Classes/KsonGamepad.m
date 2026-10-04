@@ -26,6 +26,7 @@ extern void kson_ios_set_controllers(const uint32_t *indices,
 extern bool kson_ios_capture_gamepad_button(int32_t index);
 extern bool kson_ios_capture_gamepad_axis(int32_t index);
 extern int32_t kson_ios_axis_binding(int32_t kind, int32_t raw_button);
+extern int32_t kson_ios_knob_axis(int32_t side);
 
 /// Raw control indices shared with `game/src/platform/gamepad.rs`. The button
 /// numbering matches `KsonGamepadButton`; the axes are the four stick axes used
@@ -159,9 +160,10 @@ static const float KsonStickDeadzone = 0.12f;
     pad.dpad.left.pressedChangedHandler = [self pressHandlerFor:KsonGamepadButtonDPadLeft];
     pad.dpad.right.pressedChangedHandler = [self pressHandlerFor:KsonGamepadButtonDPadRight];
 
-    // Only the left stick is used, and it drives both knobs: pushing it up and
-    // down turns the left knob, pushing it left and right turns the right one.
-    // The right stick is deliberately left unbound so it stays free.
+    // By default only the left stick is used, and it drives both knobs: pushing
+    // it up and down turns the left knob, pushing it left and right turns the
+    // right one. The settings screen can rebind each knob to any of the four
+    // stick axes, so ask the game which axis each knob is on before feeding it.
     pad.leftThumbstick.valueChangedHandler =
         ^(GCControllerDirectionPad *dpad, float x, float y) {
             (void)dpad;
@@ -172,17 +174,10 @@ static const float KsonStickDeadzone = 0.12f;
             if ([self captureAxes]) {
                 return;
             }
-            if (vertical != 0.0f
-                && kson_ios_axis_binding(0, KsonGamepadButtonDPadUp) == -1) {
-                kson_ios_gamepad_axis(0, vertical);
-            }
-            if (horizontal != 0.0f
-                && kson_ios_axis_binding(0, KsonGamepadButtonDPadLeft) == -1) {
-                kson_ios_gamepad_axis(1, horizontal);
-            }
+            [self feedKnobsX:horizontal y:vertical];
         };
-    // The right stick stays free, but it is still reported so it can be bound
-    // from the settings screen.
+    // The right stick is free by default, but it is still reported so it can be
+    // bound from the settings screen.
     pad.rightThumbstick.valueChangedHandler =
         ^(GCControllerDirectionPad *dpad, float x, float y) {
             (void)dpad;
@@ -191,15 +186,42 @@ static const float KsonStickDeadzone = 0.12f;
             if ([self captureAxes]) {
                 return;
             }
-            if (vertical != 0.0f
-                && kson_ios_axis_binding(0, KsonGamepadButtonDPadUp) == -1) {
-                kson_ios_gamepad_axis(1, vertical);
-            }
-            if (horizontal != 0.0f
-                && kson_ios_axis_binding(0, KsonGamepadButtonDPadRight) == -1) {
-                kson_ios_gamepad_axis(0, horizontal);
-            }
+            [self feedKnobsX:horizontal y:vertical];
         };
+}
+
+/// Feeds one stick's axes into whichever knobs are bound to them.
+///
+/// Two axes map onto each knob by default (the left stick's X and Y), so both
+/// are reported and the game decides which knob each one belongs to.
+/// `KsonGamepadAxisLeftX` is 0, `LeftY` 1, `RightX` 2 and `RightY` 3.
++ (void)feedKnobsX:(float)x y:(float)y {
+    // Ask once per knob which axis it is on, then feed the matching deflection.
+    // The default (=-1) falls back to the built-in pairing, which is also what
+    // happens before the settings screen has ever run.
+    int32_t leftAxis = kson_ios_knob_axis(0);
+    int32_t rightAxis = kson_ios_knob_axis(1);
+    if (leftAxis < 0) {
+        leftAxis = KsonGamepadAxisLeftY;
+    }
+    if (rightAxis < 0) {
+        rightAxis = KsonGamepadAxisLeftX;
+    }
+
+    if (x != 0.0f) {
+        if (leftAxis == KsonGamepadAxisLeftX) {
+            kson_ios_gamepad_axis(0, x);
+        } else if (rightAxis == KsonGamepadAxisLeftX) {
+            kson_ios_gamepad_axis(1, x);
+        }
+    }
+    if (y != 0.0f) {
+        if (leftAxis == KsonGamepadAxisLeftY) {
+            kson_ios_gamepad_axis(0, y);
+        } else if (rightAxis == KsonGamepadAxisLeftY) {
+            kson_ios_gamepad_axis(1, y);
+        }
+    }
 }
 
 /// Reports all four stick axes while the settings screen is capturing a

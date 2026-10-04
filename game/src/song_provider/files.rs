@@ -194,9 +194,22 @@ async fn files_worker(
                 let database = database.clone();
                 tokio::task::spawn(async move {
                     worker_tx.send(WorkerEvent::ImporterState(ImporterState::Starting));
-                    let hashes = refresh_songs(&worker_tx, &database)
-                        .await
-                        .unwrap_or_default();
+                    let hashes = match refresh_songs(&worker_tx, &database).await {
+                        Ok(hashes) => hashes,
+                        Err(e) => {
+                            // The old code discarded the error and carried on
+                            // with an empty set, which then removed every row
+                            // from the database: a folder the sandbox refuses
+                            // to read looked exactly like an empty library.
+                            // Leave the database alone and report the scan as
+                            // finished so the player is not stuck on
+                            // "importing" forever.
+                            warn!("Song refresh failed: {e:#}");
+                            worker_tx.send(WorkerEvent::ImporterState(ImporterState::Idle));
+                            load_db(&database, &worker_tx).await;
+                            return;
+                        }
+                    };
 
                     worker_tx.send(WorkerEvent::ImporterState(ImporterState::Loading(
                         "Cleaning".into(),
@@ -304,9 +317,15 @@ async fn read_song_dir(
         if p.is_dir() {
             let msg = format!("{}", p.display());
             worker_tx.send(WorkerEvent::ImporterState(ImporterState::Loading(msg)));
-            let dir = tokio::fs::read_dir(p).await?;
-            if let Ok(mut r) = Box::pin(read_song_dir(dir, worker_tx, worker_db)).await {
-                hashes.append(&mut r);
+            // A folder the sandbox refuses to open (a permissions error, or a
+            // stale entry) must not abort the whole walk: one bad directory
+            // used to stop the import and leave the library empty.
+            match tokio::fs::read_dir(&p).await {
+                Ok(dir) => match Box::pin(read_song_dir(dir, worker_tx, worker_db)).await {
+                    Ok(mut r) => hashes.append(&mut r),
+                    Err(e) => warn!("Failed to scan {}: {e:#}", p.display()),
+                },
+                Err(e) => warn!("Failed to open {}: {e:#}", p.display()),
             }
         } else if is_chart_file(&p).is_some() {
             chart_files.push(p);
