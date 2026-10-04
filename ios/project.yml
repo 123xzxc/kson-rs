@@ -41,7 +41,11 @@ targets:
         CODE_SIGN_STYLE: Automatic
         # Built by the script phase and linked from here.
         LIBRARY_SEARCH_PATHS: $(inherited) $(SRCROOT)/../target/aarch64-apple-ios/release
-        OTHER_LDFLAGS: $(inherited) -lrusc
+        # The archive is also listed explicitly: `-lrusc` alone is silently
+        # dropped when the library search path is not yet populated at the time
+        # the link flags are expanded. `-u` forces the members to be loaded even
+        # though only the Objective-C shim references them.
+        OTHER_LDFLAGS: $(inherited) -u _kson_ios_init -u _kson_ios_frame -u _kson_ios_resize -u _kson_ios_touch $(SRCROOT)/../target/aarch64-apple-ios/release/librusc.a
         HEADER_SEARCH_PATHS: $(inherited) $(SRCROOT)/KsonGame/Classes
     dependencies: []
     preBuildScripts:
