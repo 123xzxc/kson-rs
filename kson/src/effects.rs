@@ -23,6 +23,10 @@ pub enum AudioEffect {
     Gate(Gate),
     Flanger(Flanger),
     PitchShift(PitchShift),
+    // Charts in the wild (and ksm.dev uploads in particular) spell this
+    // "bitcrusher" without the underscore; only the underscored form was
+    // accepted, so those charts failed to deserialize at all.
+    #[serde(alias = "bitcrusher")]
     BitCrusher(BitCrusher),
     Phaser(Phaser),
     Wobble(Wobble),
