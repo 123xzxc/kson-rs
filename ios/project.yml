@@ -20,7 +20,7 @@ settings:
     # `KsonGameView.m` declares the Rust entry points but only calls a subset of
     # them, so without these the linker would not pull those members out of the
     # static archive. See `ios/README.md`.
-    FORCE_LOAD_SYMBOLS: $(inherited) -u _kson_ios_init -u _kson_ios_frame -u _kson_ios_resize -u _kson_ios_touch
+    FORCE_LOAD_SYMBOLS: $(inherited) -u _kson_ios_init -u _kson_ios_frame -u _kson_ios_resize -u _kson_ios_touch -u _kson_ios_gamepad_button -u _kson_ios_gamepad_axis -u _kson_ios_set_controllers -u _kson_ios_capture_gamepad_button -u _kson_ios_capture_gamepad_axis -u _kson_ios_axis_binding
 
 targets:
   KsonGame:
@@ -45,7 +45,7 @@ targets:
         # dropped when the library search path is not yet populated at the time
         # the link flags are expanded. `-u` forces the members to be loaded even
         # though only the Objective-C shim references them.
-        OTHER_LDFLAGS: $(inherited) -u _kson_ios_init -u _kson_ios_frame -u _kson_ios_resize -u _kson_ios_touch $(SRCROOT)/../target/aarch64-apple-ios/release/librusc.a
+        OTHER_LDFLAGS: $(inherited) -u _kson_ios_init -u _kson_ios_frame -u _kson_ios_resize -u _kson_ios_touch -u _kson_ios_gamepad_button -u _kson_ios_gamepad_axis -u _kson_ios_set_controllers -u _kson_ios_capture_gamepad_button -u _kson_ios_capture_gamepad_axis -u _kson_ios_axis_binding $(SRCROOT)/../target/aarch64-apple-ios/release/librusc.a
         HEADER_SEARCH_PATHS: $(inherited) $(SRCROOT)/KsonGame/Classes
     dependencies: []
     preBuildScripts:
