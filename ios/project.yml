@@ -17,6 +17,11 @@ settings:
     DEAD_CODE_STRIPPING: NO
     CLANG_CXX_LANGUAGE_STANDARD: "c++17"
 
+    # `KsonGameView.m` declares the Rust entry points but only calls a subset of
+    # them, so without these the linker would not pull those members out of the
+    # static archive. See `ios/README.md`.
+    FORCE_LOAD_SYMBOLS: $(inherited) -u _kson_ios_init -u _kson_ios_frame -u _kson_ios_resize -u _kson_ios_touch
+
 targets:
   KsonGame:
     type: application
