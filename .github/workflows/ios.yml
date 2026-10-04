@@ -111,6 +111,15 @@ jobs:
           cd "$RUNNER_TEMP/ipa"
           zip -qry "$GITHUB_WORKSPACE/USC-unsigned.ipa" Payload
 
+      - name: Diagnose linked symbols
+        run: |
+          APP="$RUNNER_TEMP/KsonGame.xcarchive/Products/Applications/USC.app"
+          ls -la "$APP"
+          echo "--- structs referenced by the app binary ---"
+          nm -u "$APP/USC" | sort -u | head -n 50
+          echo "--- archive members defining the entry points ---"
+          nm -A "$SRCROOT/../target/aarch64-apple-ios/release/librusc.a" 2>/dev/null | grep -i "kson_ios" || echo "(none found)"
+
       - name: Verify static library linked
         # `[profile.release] strip = true` in the root Cargo.toml strips local
         # symbols from the Rust staticlib, so the entry points are not visible
