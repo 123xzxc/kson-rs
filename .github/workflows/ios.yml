@@ -32,6 +32,33 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen
 
+      - name: Make git fetches resilient
+        # `kson-rodio-sources` pulls `Drewol/soundtouch-rs`, whose submodule
+        # lives on codeberg.org. That host intermittently returns 503, so use
+        # the git CLI (which retries and honours the settings below) and allow
+        # retrying the submodule fetch instead of failing the whole build.
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git config --global http.postBuffer 524288000
+          git config --global http.lowSpeedLimit 1000
+          git config --global http.lowSpeedTime 60
+
+      - name: Pre-fetch git dependencies
+        # Fetching here keeps the (flaky) submodule clone in its own step, and
+        # gives it a few attempts before the cargo build itself runs.
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+        run: |
+          for attempt in 1 2 3; do
+            if cargo fetch --locked; then
+              exit 0
+            fi
+            echo "cargo fetch failed (attempt $attempt/3); retrying in 20s"
+            sleep 20
+          done
+          echo "cargo fetch failed after 3 attempts"
+          exit 1
+
       - name: Build Rust static library
         # `embed-assets` bakes the default skin and fonts into the binary so the
         # app works without a separate resource copy; `--no-default-features`
@@ -43,6 +70,8 @@ jobs:
         # referenced without a matching definition.
         env:
           IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          CARGO_NET_RETRY: "10"
         run: |
           # A `runtime` cdylib needs the app-side GL symbols, which do not
           # exist when the library is linked standalone. iOS only consumes the
