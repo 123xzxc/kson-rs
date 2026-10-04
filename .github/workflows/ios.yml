@@ -11,6 +11,9 @@ on:
 jobs:
   build:
     runs-on: macos-15
+    # The macOS runner is the scarce resource here; cap the job so a hang in
+    # the C dependency build cannot burn the whole concurrency budget.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 

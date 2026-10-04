@@ -1,9 +1,12 @@
 name: Game Installer
 on:
+  # Only the desktop/Android installers run on `master`. The `feat/**` branches
+  # are used for the iOS port, where the macOS/Windows installer matrix would
+  # compete for the same concurrency quota as the iOS build for no benefit.
   push:
     branches:
       - master
-      - 'feat/**'
+  workflow_dispatch:
 jobs:
   bundle:
     strategy:
