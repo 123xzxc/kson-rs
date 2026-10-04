@@ -52,6 +52,7 @@ extern void kson_ios_touch(uint64_t touch_id, double x, double y, int32_t phase)
     EAGLContext *_context;
     GLuint _framebuffer;
     GLuint _colorRenderbuffer;
+    GLuint _depthStencilRenderbuffer;
     CADisplayLink *_displayLink;
     CFTimeInterval _lastTimestamp;
     BOOL _initialized;
@@ -106,6 +107,7 @@ extern void kson_ios_touch(uint64_t touch_id, double x, double y, int32_t phase)
 
     glGenFramebuffers(1, &_framebuffer);
     glGenRenderbuffers(1, &_colorRenderbuffer);
+    glGenRenderbuffers(1, &_depthStencilRenderbuffer);
 
     // `commonInit` runs from `initWithFrame:`/`initWithCoder:`, before the view
     // has been laid out, so `bounds` is frequently 0x0. Attaching a 0x0
@@ -145,18 +147,43 @@ extern void kson_ios_touch(uint64_t touch_id, double x, double y, int32_t phase)
     if (_context == nil || self.bounds.size.width <= 0.0 || self.bounds.size.height <= 0.0) {
         return;
     }
+    // `contentScaleFactor` is still 1.0 inside `commonInit` because the view is
+    // not on a screen yet, and under LiveContainer the window can report 1.0 as
+    // well. Prefer the native screen scale, then the view's own value.
+    CGFloat scale = self.contentScaleFactor;
+    CGFloat screenScale = [UIScreen mainScreen].scale;
+    if (screenScale > scale) {
+        scale = screenScale;
+        self.contentScaleFactor = screenScale;
+    }
+    CAEAGLLayer *eaglLayer = (CAEAGLLayer *)self.layer;
+    if (eaglLayer.contentsScale != scale) {
+        eaglLayer.contentsScale = scale;
+    }
+
     glBindRenderbuffer(GL_RENDERBUFFER, _colorRenderbuffer);
-    [_context renderbufferStorage:GL_RENDERBUFFER fromDrawable:(CAEAGLLayer *)self.layer];
+    [_context renderbufferStorage:GL_RENDERBUFFER fromDrawable:eaglLayer];
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, _colorRenderbuffer);
+
+    // femtovg's `set_screen_target` refuses a framebuffer without a depth and
+    // stencil attachment, and three-d's depth-tested draws need one too. Size
+    // it from the color renderbuffer so it always matches the drawable.
+    GLint drawableW = 0;
+    GLint drawableH = 0;
+    glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_WIDTH, &drawableW);
+    glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_HEIGHT, &drawableH);
+    glBindRenderbuffer(GL_RENDERBUFFER, _depthStencilRenderbuffer);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8_OES, drawableW, drawableH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, _depthStencilRenderbuffer);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, _depthStencilRenderbuffer);
 
     GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if (status != GL_FRAMEBUFFER_COMPLETE) {
         NSLog(@"[KsonGame] framebuffer incomplete: 0x%x (%.0fx%.0f @%.1fx)",
               status, self.bounds.size.width, self.bounds.size.height,
-              self.contentScaleFactor);
+              scale);
     }
 
-    CGFloat scale = self.contentScaleFactor;
     CGFloat w = self.bounds.size.width;
     CGFloat h = self.bounds.size.height;
     if (_initialized) {

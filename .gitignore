@@ -12,4 +12,5 @@ Main.cfg
 maps.db
 game/rusc_database/maps.db-shm
 game/rusc_database/maps.db-wal
-/artifacts
+/artifactsbuild-ipa/
+*.ipa

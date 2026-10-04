@@ -121,6 +121,12 @@ impl RenderContext {
         (self.width, self.height)
     }
 
+    /// Id of the EAGL drawable framebuffer, so callers can hand it to other
+    /// rendering libraries (femtovg's `set_screen_target`).
+    pub fn framebuffer_id(&self) -> u32 {
+        self.framebuffer
+    }
+
     pub fn scale(&self) -> f32 {
         self.scale
     }
@@ -156,16 +162,13 @@ impl RenderContext {
         static PRESENTS: AtomicU64 = AtomicU64::new(0);
         let n = PRESENTS.fetch_add(1, Ordering::Relaxed);
         let (w, h) = self.size();
-        if n < 3 || n % 300 == 0 {
-            // Go through glow instead of declaring `glGetError` ourselves:
-            // OpenGL ES symbols are weak imports on iOS, so a bare `extern "C"`
-            // reference would not resolve from a Rust static library.
-            let err = unsafe { self.glow.get_error() };
-            log::info!(
-                "present #{n} fb={} size={w}x{h} scale={} gl_error=0x{err:x}",
-                self.framebuffer,
-                self.scale
-            );
+        let log_this = n < 3 || n % 300 == 0;
+        // Clear any stale error so the value read after presenting describes
+        // *this* frame. Go through glow instead of declaring `glGetError`
+        // ourselves: OpenGL ES symbols are weak imports on iOS and would not
+        // resolve from a Rust static library.
+        if log_this {
+            let _ = unsafe { self.glow.get_error() };
         }
         // femtovg leaves its own framebuffer bound after flushing. EAGL's
         // `presentRenderbuffer:` only works when the drawable's renderbuffer is
@@ -177,6 +180,14 @@ impl RenderContext {
             }
         }
         unsafe { eagl_present_renderbuffer(self.eagl) }
+        if log_this {
+            let err = unsafe { self.glow.get_error() };
+            log::info!(
+                "present #{n} fb={} size={w}x{h} scale={} gl_error=0x{err:x}",
+                self.framebuffer,
+                self.scale
+            );
+        }
     }
 }
 

@@ -81,6 +81,18 @@ impl IosApp {
                 })
             }
             .map_err(|e| anyhow::anyhow!("femtovg renderer init failed: {e}"))?;
+            // femtovg draws `RenderTarget::Screen` by unbinding the framebuffer
+            // (id 0), which does not exist on EAGL. Point its screen target at
+            // the drawable framebuffer before handing the renderer to the
+            // canvas. That FBO carries a combined depth/stencil renderbuffer,
+            // which femtovg requires.
+            let mut renderer = renderer;
+            if let Some(fbo) =
+                std::num::NonZeroU32::new(render.framebuffer_id())
+            {
+                renderer.set_screen_target(Some(glow013::NativeFramebuffer(fbo)));
+            }
+
             let mut canvas = femtovg::Canvas::new(renderer)
                 .map_err(|e| anyhow::anyhow!("canvas init failed: {e}"))?;
             canvas.set_size(render.size().0, render.size().1, scale);

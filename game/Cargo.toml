@@ -115,6 +115,10 @@ winit = { version = "0.30", features = ["serde"] }
 gilrs-ios-stub = { path = "../ios/gilrs-stub" }
 egui_glow = { workspace = true, features = ["winit"] }
 glow = "0.16"
+# femtovg pins glow 0.13, and its `set_screen_target` takes *that* version's
+# `NativeFramebuffer`. Alias the same version so the iOS canvas setup can pass
+# the EAGL drawable framebuffer without pulling in a second semver major.
+glow013 = { package = "glow", version = "0.13" }
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "blocking",
