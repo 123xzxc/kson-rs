@@ -89,7 +89,7 @@ jobs:
             --crate-type staticlib \
             --features embed-assets \
             --no-default-features \
-            -- -C strip=debuginfo
+            -- -C strip=debuginfo -C link-dead-code
 
           LIB="target/aarch64-apple-ios/release/librusc.a"
           test -f "$LIB" || { echo "missing $LIB"; exit 1; }
@@ -112,6 +112,10 @@ jobs:
           echo "using $NM"
           echo "--- archive members ---"
           "$NM" "$LIB" | grep -i "rusc\." | head -n 20 || true
+          echo "--- symbol count in the rusc object ---"
+          "$NM" "$LIB" | awk '/rusc-.*rcgu\.o:/{f=1;next} /^$/{f=0} f' | wc -l
+          echo "--- raw dump of the rusc object (first 20 lines) ---"
+          "$NM" -A "$LIB" | grep "rusc-" | head -n 20 || true
           echo "--- external symbols mentioning kson ---"
           "$NM" -g "$LIB" | grep -i "kson" | head -n 20 || true
           echo "--- all symbols mentioning kson_ios ---"

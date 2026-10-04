@@ -66,4 +66,4 @@ targets:
           cargo rustc --release --target aarch64-apple-ios -p rusc --lib \
             --crate-type staticlib \
             --features embed-assets --no-default-features \
-            -- -C strip=debuginfo
+            -- -C strip=debuginfo -C link-dead-code
