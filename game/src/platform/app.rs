@@ -19,7 +19,7 @@ use crate::async_service::AsyncService;
 use crate::button_codes::LaserState;
 use crate::companion_interface::CompanionServer;
 use crate::config::{Args, GameConfig};
-use crate::egui_host::{EguiHost, IosEgui};
+use crate::egui_host::IosEgui;
 use crate::game_main::GameMain;
 use crate::help::ServiceHelper;
 use crate::input_state::InputState;
@@ -106,9 +106,10 @@ impl IosApp {
             // like `window::create_window` does.
             Mutex::new(canvas)
         };
-        // The egui host paints through the same canvas the skins use, which it
-        // resolves from `Vgfx` when it draws.
-        let egui = IosEgui::new(render.size().0, render.size().1, scale);
+        // egui paints with its own glow shader on the EAGL context, so it gets
+        // a clone of the shared glow context (the painter is created while the
+        // context is current, which it is during `kson_ios_init`).
+        let egui = IosEgui::new(render.glow().clone(), render.size().0, render.size().1, scale);
 
         let services = ServiceCollection::new()
             .add(AsyncService::singleton().as_mut())
@@ -175,7 +176,7 @@ impl IosApp {
             femtovg::Paint::color(femtovg::Color::white()),
             // egui integration; on iOS the settings and download screens are
             // egui-only, so without a working rasterizer they render as a black
-            // screen. The host paints through the same canvas the skins use.
+            // screen.
             egui,
             GameConfig::get().args.debug,
             services.create_scope(),

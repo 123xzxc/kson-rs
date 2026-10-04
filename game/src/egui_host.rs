@@ -1,9 +1,10 @@
 //! Platform abstraction over the egui integration.
 //!
 //! Desktop builds use `egui_glow::EguiGlow`, which owns a glow painter plus the
-//! winit integration. iOS has no glutin window integration, so it uses a
-//! separate implementation that builds `egui::RawInput` by hand and rasterizes
-//! the resulting primitives through the femtovg canvas shared with the skin UI.
+//! winit integration. iOS has no glutin window integration, so it drives
+//! `egui_glow::Painter` directly: the raw input is assembled from the UIKit
+//! touch callbacks, and the tessellated meshes are drawn with glow on the same
+//! EAGL context the rest of the renderer uses.
 //!
 //! `GameMain` only talks to this trait, so the render loop is shared.
 
@@ -17,14 +18,10 @@ pub trait EguiHost {
         self.ctx().is_pointer_over_area()
     }
 
-    /// Runs one frame of UI and rasterizes it through the femtovg canvas owned
-    /// by `Vgfx`. Desktop drives the equivalent through `egui_glow`.
+    /// Runs one frame of UI and paints it. Desktop drives the equivalent
+    /// through `egui_glow`'s window integration.
     #[cfg(target_os = "ios")]
-    fn run_and_paint(
-        &mut self,
-        vgfx: &std::sync::Arc<std::sync::RwLock<crate::vg_ui::Vgfx>>,
-        run_ui: impl FnMut(&Context),
-    );
+    fn run_and_paint(&mut self, run_ui: impl FnMut(&Context));
 }
 
 #[cfg(not(target_os = "ios"))]
@@ -42,27 +39,23 @@ pub type EguiIntegration = egui_glow::EguiGlow;
 
 #[cfg(target_os = "ios")]
 mod ios {
-    use std::collections::HashMap;
-    use std::sync::{Arc, RwLock};
-
     use egui::{
-        epaint::{ClippedPrimitive, Primitive},
-        Context, Event as EguiEvent, Modifiers, PointerButton, Pos2, RawInput, Rect, TextureId,
-        TexturesDelta, Vec2,
+        Context, Event as EguiEvent, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2,
     };
-    use femtovg::{Color as VgColor, ImageFlags, ImageId, Paint, Path};
+    use egui_glow::Painter;
+    use std::sync::Arc;
 
     use super::EguiHost;
-    use crate::vg_ui::Vgfx;
 
     /// egui integration for iOS.
     ///
     /// There is no winit window to hand to `egui-winit`, so the raw input is
-    /// assembled here from the UIKit touch callbacks, and the tessellated
-    /// primitives are turned into femtovg paths that are drawn on the shared
-    /// skin canvas.
+    /// assembled here from the UIKit touch callbacks. Meshes are painted with
+    /// `egui_glow::Painter`, which manages its own texture atlas and shader, so
+    /// the per-vertex UVs egui emits are handled correctly.
     pub struct IosEgui {
         ctx: Context,
+        painter: Option<Painter>,
         width: u32,
         height: u32,
         scale: f32,
@@ -72,21 +65,28 @@ mod ios {
         /// fight over it.
         pointer_touch: Option<u64>,
         modifiers: Modifiers,
-        textures: HashMap<TextureId, ImageId>,
         /// Primitives recorded by [`Self::run`], painted by [`Self::paint`].
         shapes: Vec<egui::epaint::ClippedShape>,
         pixels_per_point: f32,
-        /// Frames with a pending repaint, used to keep the display link awake
-        /// for animations and after input.
-        dirty: bool,
     }
 
     impl IosEgui {
-        pub fn new(width: u32, height: u32, scale: f32) -> Self {
+        pub fn new(gl: Arc<glow::Context>, width: u32, height: u32, scale: f32) -> Self {
             let ctx = Context::default();
             ctx.set_pixels_per_point(scale);
+            // The painter compiles a shader and creates buffers on the current
+            // context, so it has to be built once the EAGL context is current
+            // (which it is, inside `kson_ios_init`).
+            let painter = match Painter::new(gl, "", None, false) {
+                Ok(painter) => Some(painter),
+                Err(e) => {
+                    log::error!("egui painter init failed: {e}");
+                    None
+                }
+            };
             Self {
                 ctx,
+                painter,
                 width,
                 height,
                 scale,
@@ -94,10 +94,8 @@ mod ios {
                 pointer_down: false,
                 pointer_touch: None,
                 modifiers: Modifiers::default(),
-                textures: HashMap::new(),
                 shapes: Vec::new(),
                 pixels_per_point: scale,
-                dirty: true,
             }
         }
 
@@ -109,13 +107,11 @@ mod ios {
             self.height = height;
             self.scale = scale;
             self.ctx.set_pixels_per_point(scale);
-            self.dirty = true;
         }
 
         fn raw_input(&mut self) -> RawInput {
             // egui works in logical points; UIKit coordinates are already in
-            // points, so no scaling is applied to the pointer position, only
-            // `pixels_per_point` tells egui how large one point is on screen.
+            // points, and `pixels_per_point` tells egui how large a point is.
             let screen = Rect::from_min_size(
                 Pos2::ZERO,
                 Vec2::new(self.width as f32, self.height as f32),
@@ -134,96 +130,24 @@ mod ios {
             }
         }
 
-        fn apply_textures(&mut self, delta: TexturesDelta, canvas: &mut femtovg::Canvas<femtovg::renderer::OpenGl>) {
-            for (id, image_delta) in delta.set {
-                let (size, pixels): ([usize; 2], Vec<femtovg::rgb::RGBA8>) =
-                    match &image_delta.image {
-                        egui::ImageData::Color(img) => (
-                            img.size,
-                            img.pixels
-                                .iter()
-                                .map(|c| femtovg::rgb::RGBA8::new(c.r(), c.g(), c.b(), c.a()))
-                                .collect(),
-                        ),
-                        egui::ImageData::Font(img) => (
-                            img.size,
-                            img.srgba_pixels(None)
-                                .map(|c| femtovg::rgb::RGBA8::new(c.r(), c.g(), c.b(), c.a()))
-                                .collect(),
-                        ),
-                    };
-                let source = femtovg::imgref::ImgRef::new(&pixels, size[0], size[1]);
-                let pos = image_delta.pos.unwrap_or([0, 0]);
-                let image_id = match self.textures.get(&id).copied() {
-                    Some(existing) => canvas
-                        .update_image(existing, femtovg::ImageSource::Rgba(source), pos[0], pos[1])
-                        .map(|_| existing),
-                    None => canvas
-                        .create_image(femtovg::ImageSource::Rgba(source), ImageFlags::empty()),
-                };
-                if let Ok(image_id) = image_id {
-                    self.textures.insert(id, image_id);
-                }
-            }
-            for id in delta.free {
-                if let Some(image_id) = self.textures.remove(&id) {
-                    canvas.delete_image(image_id);
-                }
-            }
-        }
+        /// Runs the UI and paints the result with glow.
+        pub fn run_and_paint(&mut self, run_ui: impl FnMut(&Context)) {
+            let raw = self.raw_input();
+            let full = self.ctx.run(raw, run_ui);
+            let clipped = self.ctx.tessellate(full.shapes, full.pixels_per_point);
 
-        /// Paints the primitives recorded by [`Self::run`] onto the shared
-        /// femtovg canvas.
-        pub fn paint(&mut self, canvas: &mut femtovg::Canvas<femtovg::renderer::OpenGl>) {
-            let shapes = std::mem::take(&mut self.shapes);
-            if shapes.is_empty() {
+            // `paint_and_update_textures` expects the caller to have cleared the
+            // color buffer; the scenes already drew this frame and we are a
+            // transparent overlay on top, so only the blend state matters.
+            let Some(painter) = self.painter.as_mut() else {
                 return;
-            }
-            let clipped = self.ctx.tessellate(shapes, self.pixels_per_point);
-            for ClippedPrimitive { clip_rect, primitive } in clipped {
-                if clip_rect.width() <= 0.0 || clip_rect.height() <= 0.0 {
-                    continue;
-                }
-                canvas.save();
-                canvas.scissor(
-                    clip_rect.min.x,
-                    clip_rect.min.y,
-                    clip_rect.width(),
-                    clip_rect.height(),
-                );
-                match primitive {
-                    Primitive::Mesh(mesh) => {
-                        let paint = match mesh.texture_id {
-                            id => match self.textures.get(&id).copied() {
-                                Some(id) => Paint::image(id, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0),
-                                None => Paint::color(VgColor::rgba(255, 255, 255, 255)),
-                            },
-                        };
-                        let mut path = Path::new();
-                        for tri in mesh.indices.chunks_exact(3) {
-                            let (Ok(a), Ok(b), Ok(c)) = (
-                                usize::try_from(tri[0]),
-                                usize::try_from(tri[1]),
-                                usize::try_from(tri[2]),
-                            ) else {
-                                continue;
-                            };
-                            let (Some(va), Some(vb), Some(vc)) =
-                                (mesh.vertices.get(a), mesh.vertices.get(b), mesh.vertices.get(c))
-                            else {
-                                continue;
-                            };
-                            path.move_to(va.pos.x, va.pos.y);
-                            path.line_to(vb.pos.x, vb.pos.y);
-                            path.line_to(vc.pos.x, vc.pos.y);
-                            path.close();
-                        }
-                        canvas.fill_path(&path, &paint);
-                    }
-                    Primitive::Callback(_) => {}
-                }
-                canvas.restore();
-            }
+            };
+            painter.paint_and_update_textures(
+                [self.width, self.height],
+                full.pixels_per_point,
+                &clipped,
+                &full.textures_delta,
+            );
         }
 
         // --- Input plumbing -------------------------------------------------
@@ -233,7 +157,6 @@ mod ios {
             self.ctx.input_mut(|i| {
                 i.events.push(EguiEvent::PointerMoved(Pos2::new(x, y)));
             });
-            self.dirty = true;
         }
 
         pub fn pointer_down(&mut self) {
@@ -248,7 +171,6 @@ mod ios {
                     });
                 });
             }
-            self.dirty = true;
         }
 
         pub fn pointer_up(&mut self) {
@@ -262,7 +184,6 @@ mod ios {
                     modifiers: self.modifiers,
                 });
             });
-            self.dirty = true;
         }
 
         /// Starts a pointer drag for the given touch id, if no other touch owns
@@ -297,43 +218,6 @@ mod ios {
         }
     }
 
-    impl IosEgui {
-        pub fn ctx(&self) -> &Context {
-            &self.ctx
-        }
-
-        pub fn needs_repaint(&self) -> bool {
-            self.dirty || self.ctx.has_requested_repaint()
-        }
-
-        /// Main entry point used by `GameMain::render_ios`: runs the UI and
-        /// rasterizes it onto the skin canvas in one go.
-        pub fn run_and_paint(
-            &mut self,
-            vgfx: &Arc<RwLock<Vgfx>>,
-            run_ui: impl FnMut(&Context),
-        ) {
-            let mut canvas = {
-                let vgfx = vgfx.read().expect("Lock error");
-                vgfx.canvas.clone()
-            };
-            // Textures are uploaded before the tessellated paths reference them.
-            {
-                let mut canvas = canvas.lock().expect("Lock error");
-                let raw = self.raw_input();
-                let full = self.ctx.run(raw, run_ui);
-                self.dirty =
-                    full.shapes.iter().any(|s| s.shape.visual_bounding_rect().is_positive())
-                        || !full.textures_delta.set.is_empty();
-                self.apply_textures(full.textures_delta, &mut canvas);
-                self.shapes = full.shapes;
-                self.pixels_per_point = full.pixels_per_point;
-                self.paint(&mut canvas);
-            }
-            let _ = &mut canvas;
-        }
-    }
-
     impl EguiHost for IosEgui {
         fn ctx(&self) -> &Context {
             &self.ctx
@@ -343,8 +227,8 @@ mod ios {
             self.wants_pointer()
         }
 
-        fn run_and_paint(&mut self, vgfx: &Arc<RwLock<Vgfx>>, run_ui: impl FnMut(&Context)) {
-            self.run_and_paint(vgfx, run_ui);
+        fn run_and_paint(&mut self, run_ui: impl FnMut(&Context)) {
+            IosEgui::run_and_paint(self, run_ui);
         }
     }
 }

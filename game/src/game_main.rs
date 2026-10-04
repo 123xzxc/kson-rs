@@ -27,7 +27,7 @@ use glutin::{
 };
 use puffin::{profile_function, profile_scope};
 
-use crate::egui_host::{EguiHost, EguiIntegration};
+use crate::egui_host::EguiIntegration;
 use crate::platform::window::{find_monitor, PlatformWindow};
 
 use crate::{
@@ -1248,9 +1248,10 @@ impl GameMain {
         Self::run_lua_gc(lua_arena, &mut vgfx.write().expect("Lock error"));
 
         // egui draws the settings and download screens, which are not part of
-        // any skin. Their primitives are rasterized through the same femtovg
-        // canvas as the skin UI, on top of it.
-        gui.run_and_paint(vgfx, |ctx| {
+        // any skin. Their primitives are rasterized with `egui_glow::Painter`,
+        // which targets whatever framebuffer is currently bound (the EAGL
+        // drawable), so egui lands as a transparent overlay on the scene.
+        gui.run_and_paint(|ctx| {
             scenes.render_egui(ctx);
             if *show_debug_ui {
                 Self::debug_ui(ctx, scenes, vgfx);
