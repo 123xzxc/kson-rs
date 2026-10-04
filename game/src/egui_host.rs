@@ -56,8 +56,10 @@ mod ios {
     pub struct IosEgui {
         ctx: Context,
         painter: Option<Painter>,
-        width: u32,
-        height: u32,
+        /// Screen size in logical points, which is the space egui and the
+        /// incoming touches use. The painter derives the pixel viewport from
+        /// this and `pixels_per_point`.
+        points: Vec2,
         scale: f32,
         pointer_pos: Option<Pos2>,
         pointer_down: bool,
@@ -68,6 +70,13 @@ mod ios {
         /// Primitives recorded by [`Self::run`], painted by [`Self::paint`].
         shapes: Vec<egui::epaint::ClippedShape>,
         pixels_per_point: f32,
+        /// Input events accumulated since the last frame.
+        ///
+        /// egui only reads events from the `RawInput` handed to `Context::run`;
+        /// pushing them into the context between frames does not work, because
+        /// `run` replaces the input. Queue them here and drain them into
+        /// `RawInput::events` when the frame is built.
+        events: Vec<EguiEvent>,
     }
 
     impl IosEgui {
@@ -87,8 +96,7 @@ mod ios {
             Self {
                 ctx,
                 painter,
-                width,
-                height,
+                points: Vec2::new(width as f32, height as f32),
                 scale,
                 pointer_pos: None,
                 pointer_down: false,
@@ -96,6 +104,7 @@ mod ios {
                 modifiers: Modifiers::default(),
                 shapes: Vec::new(),
                 pixels_per_point: scale,
+                events: Vec::new(),
             }
         }
 
@@ -103,8 +112,7 @@ mod ios {
             if width == 0 || height == 0 {
                 return;
             }
-            self.width = width;
-            self.height = height;
+            self.points = Vec2::new(width as f32, height as f32);
             self.scale = scale;
             self.ctx.set_pixels_per_point(scale);
         }
@@ -112,12 +120,13 @@ mod ios {
         fn raw_input(&mut self) -> RawInput {
             // egui works in logical points; UIKit coordinates are already in
             // points, and `pixels_per_point` tells egui how large a point is.
-            let screen = Rect::from_min_size(
-                Pos2::ZERO,
-                Vec2::new(self.width as f32, self.height as f32),
-            );
+            // `width`/`height` are therefore logical points too: passing the
+            // render size in pixels would double the screen rect on a Retina
+            // display and push every widget away from the touch.
+            let screen = Rect::from_min_size(Pos2::ZERO, self.points);
             RawInput {
                 screen_rect: Some(screen),
+                events: std::mem::take(&mut self.events),
                 time: Some(
                     std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -142,8 +151,13 @@ mod ios {
             let Some(painter) = self.painter.as_mut() else {
                 return;
             };
+            // egui sizes in points; the painter wants the framebuffer in pixels.
+            let pixel_size = [
+                (self.points.x * self.scale).round() as u32,
+                (self.points.y * self.scale).round() as u32,
+            ];
             painter.paint_and_update_textures(
-                [self.width, self.height],
+                pixel_size,
                 full.pixels_per_point,
                 &clipped,
                 &full.textures_delta,
@@ -154,21 +168,17 @@ mod ios {
 
         pub fn pointer_moved(&mut self, x: f32, y: f32) {
             self.pointer_pos = Some(Pos2::new(x, y));
-            self.ctx.input_mut(|i| {
-                i.events.push(EguiEvent::PointerMoved(Pos2::new(x, y)));
-            });
+            self.events.push(EguiEvent::PointerMoved(Pos2::new(x, y)));
         }
 
         pub fn pointer_down(&mut self) {
             self.pointer_down = true;
             if let Some(pos) = self.pointer_pos {
-                self.ctx.input_mut(|i| {
-                    i.events.push(EguiEvent::PointerButton {
-                        pos,
-                        button: PointerButton::Primary,
-                        pressed: true,
-                        modifiers: self.modifiers,
-                    });
+                self.events.push(EguiEvent::PointerButton {
+                    pos,
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: self.modifiers,
                 });
             }
         }
@@ -176,13 +186,11 @@ mod ios {
         pub fn pointer_up(&mut self) {
             self.pointer_down = false;
             let pos = self.pointer_pos.unwrap_or(Pos2::ZERO);
-            self.ctx.input_mut(|i| {
-                i.events.push(EguiEvent::PointerButton {
-                    pos,
-                    button: PointerButton::Primary,
-                    pressed: false,
-                    modifiers: self.modifiers,
-                });
+            self.events.push(EguiEvent::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: self.modifiers,
             });
         }
 

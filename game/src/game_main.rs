@@ -1367,6 +1367,13 @@ impl GameMain {
         self.scenes.menu_wants_drag()
     }
 
+    /// Keeps the egui host's screen size in sync after a rotation or resize.
+    /// `width`/`height` are logical points.
+    #[cfg(target_os = "ios")]
+    pub fn resize_egui(&mut self, width: u32, height: u32, scale: f32) {
+        self.gui.resize(width, height, scale);
+    }
+
     /// Desktop synthesizes `CursorMoved` + `MouseInput` from a touch when the
     /// active scene advertises `touch_as_mouse`. iOS has no winit event loop, so
     /// reproduce that synthesis here.

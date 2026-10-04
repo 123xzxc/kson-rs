@@ -117,7 +117,13 @@ impl IosApp {
         // egui paints with its own glow shader on the EAGL context, so it gets
         // a clone of the shared glow context (the painter is created while the
         // context is current, which it is during `kson_ios_init`).
-        let egui = IosEgui::new(render.glow().clone(), render.size().0, render.size().1, scale);
+        // It works in logical points, which is what the touches carry.
+        let egui = IosEgui::new(
+            render.glow().clone(),
+            width as u32,
+            height as u32,
+            scale,
+        );
 
         let services = ServiceCollection::new()
             .add(AsyncService::singleton().as_mut())
@@ -213,6 +219,7 @@ impl IosApp {
         self.render
             .resize((width * scale as f64) as u32, (height * scale as f64) as u32);
         self.touch.resize(width, height);
+        self.game.resize_egui(width as u32, height as u32, scale);
     }
 
     pub fn frame(&mut self, elapsed_ms: f64) {
