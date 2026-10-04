@@ -803,9 +803,21 @@ fn song_from_zip(
         chart_hash.update(&buf);
         let chart_hash = chart_hash.digest().to_string();
 
-        let Ok(mut chart_string) = String::from_utf8(buf) else {
-            continue;
-        };
+        // Charts downloaded from nautica are KSH, which is Shift-JIS, not
+        // UTF-8. Decoding them as UTF-8 silently produced an empty chart (the
+        // parser drops every non-ASCII line), which surfaced later as
+        // `Empty chart` when the player pressed play. Decode with the same
+        // WJ31 decoder the local file provider uses and keep UTF-8 as the
+        // first attempt so KSON files still parse.
+        let mut chart_string = String::from_utf8(buf.clone()).unwrap_or_else(|_| {
+            encoding::types::decode(
+                &buf,
+                encoding::DecoderTrap::Replace,
+                encoding::all::WINDOWS_31J,
+            )
+            .0
+            .unwrap_or_default()
+        });
 
         let file_folder = PathBuf::from(file.name());
         drop(file);

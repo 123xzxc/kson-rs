@@ -74,6 +74,15 @@ pub fn bootstrap_game_dir() -> anyhow::Result<()> {
         copy_dir_recursive(&source, &target)?;
     }
 
+    // Songs are read from `<game_dir>/songs`, which does not exist in a fresh
+    // container. Create it so the folder shows up in Files.app and the player
+    // can drop charts into it; without it the importer fails to open the
+    // directory and there is nowhere to add charts manually.
+    let songs = game_dir.join("songs");
+    if !songs.exists() {
+        let _ = std::fs::create_dir_all(&songs);
+    }
+
     Ok(())
 }
 

@@ -1247,10 +1247,15 @@ impl GameMain {
         Self::render_overlays(vgfx, &frame_input, fps, fps_paint, *show_fps);
         Self::run_lua_gc(lua_arena, &mut vgfx.write().expect("Lock error"));
 
-        if *show_debug_ui {
-            let ctx = gui.ctx().clone();
-            Self::debug_ui(&ctx, scenes, vgfx);
-        }
+        // egui draws the settings and download screens, which are not part of
+        // any skin. Their primitives are rasterized through the same femtovg
+        // canvas as the skin UI, on top of it.
+        gui.run_and_paint(vgfx, |ctx| {
+            scenes.render_egui(ctx);
+            if *show_debug_ui {
+                Self::debug_ui(ctx, scenes, vgfx);
+            }
+        });
 
         let exit = scenes.is_empty();
         if exit {
@@ -1266,14 +1271,106 @@ impl GameMain {
     pub fn handle_input_event(&mut self, e: crate::button_codes::UscInputEvent) {
         self.input_state.update(&e);
         match e {
-            UscInputEvent::Button(b, winit::event::ElementState::Pressed, time) => self
-                .scenes
-                .for_each_active_mut(|x| x.on_button_pressed(b, time)),
-            UscInputEvent::Button(b, winit::event::ElementState::Released, time) => self
-                .scenes
-                .for_each_active_mut(|x| x.on_button_released(b, time)),
+            UscInputEvent::Button(b, state, time) => {
+                // The virtual button grid emits laser buttons, which the
+                // desktop path turns into knob deltas when `keyboard_knobs` is
+                // on. That conversion lives in the winit event loop, which iOS
+                // does not run, so do it here instead: without it the on-screen
+                // laser areas do nothing at all.
+                if let crate::button_codes::UscButton::Laser(side, dir) = b {
+                    if state == winit::event::ElementState::Pressed {
+                        let mut ls = self.input_state.clone_laser();
+                        ls.zero_deltas();
+                        ls.update(
+                            side,
+                            match dir {
+                                kson::Side::Left => -Self::KEYBOARD_LASER_SENS,
+                                kson::Side::Right => Self::KEYBOARD_LASER_SENS,
+                            },
+                        );
+                        self.knob_state = ls;
+                    }
+                }
+                match state {
+                    winit::event::ElementState::Pressed => self
+                        .scenes
+                        .for_each_active_mut(|x| x.on_button_pressed(b, time)),
+                    winit::event::ElementState::Released => self
+                        .scenes
+                        .for_each_active_mut(|x| x.on_button_released(b, time)),
+                }
+            }
             UscInputEvent::Laser(ls, _) => self.knob_state = ls,
             UscInputEvent::ClientEvent(_) => {}
         }
+    }
+
+    /// iOS touch routing for the egui screens.
+    ///
+    /// The iOS renderer paints the on-screen controller through the same canvas
+    /// the skins use, so expose it.
+    #[cfg(target_os = "ios")]
+    pub fn vgfx(&self) -> &Arc<RwLock<Vgfx>> {
+        &self.vgfx
+    }
+
+    /// Screens that render through egui (settings, downloads) advertise
+    /// themselves with `touch_as_mouse`, which is how the desktop path turns a
+    /// touch into a synthetic cursor. iOS has no synthetic cursor, so the touch
+    /// is forwarded to egui directly here and swallowed when egui owns the
+    /// pointer; otherwise the caller falls back to the virtual button grid.
+    ///
+    /// Returns `true` when egui consumed the touch.
+    #[cfg(target_os = "ios")]
+    pub fn route_egui_touch(&mut self, id: u64, x: f64, y: f64, phase: crate::platform::input::TouchPhase) -> bool {
+        use crate::platform::input::TouchPhase;
+        if !self.scenes.touch_as_mouse() {
+            return false;
+        }
+        // egui screens (settings) consume the touch as a real pointer.
+        if self.scenes.should_render_egui() {
+            match phase {
+                TouchPhase::Began => {
+                    self.gui.touch_begin(id, x as f32, y as f32);
+                }
+                TouchPhase::Moved => self.gui.touch_move(id, x as f32, y as f32),
+                TouchPhase::Ended | TouchPhase::Cancelled => self.gui.touch_end(id),
+            }
+        }
+        // Skin screens (title, song select) drive their widgets from mouse
+        // events, which is what the desktop path synthesizes for a touch.
+        self.handle_touch_as_mouse(x, y, phase);
+        true
+    }
+
+    /// Desktop synthesizes `CursorMoved` + `MouseInput` from a touch when the
+    /// active scene advertises `touch_as_mouse`. iOS has no winit event loop, so
+    /// reproduce that synthesis here.
+    #[cfg(target_os = "ios")]
+    fn handle_touch_as_mouse(&mut self, x: f64, y: f64, phase: crate::platform::input::TouchPhase) {
+        use crate::platform::input::TouchPhase;
+        use winit::event::{ElementState, Event, MouseButton, WindowEvent};
+
+        // Skin widgets read the cursor position from the shared game data, so
+        // the synthetic move has to update it exactly like the desktop path.
+        self.mousex = x;
+        self.mousey = y;
+
+        let state = match phase {
+            TouchPhase::Began => ElementState::Pressed,
+            TouchPhase::Moved => return,
+            TouchPhase::Ended | TouchPhase::Cancelled => ElementState::Released,
+        };
+
+        let event = Event::WindowEvent {
+            window_id: winit::window::WindowId::dummy(),
+            event: WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state,
+                button: MouseButton::Left,
+            },
+        };
+        self.scenes
+            .for_each_active_mut(|scene| scene.on_event(&event));
     }
 }

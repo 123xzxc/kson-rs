@@ -203,4 +203,15 @@ impl TouchHelper {
             tracked: HashMap::new(),
         }
     }
+
+    /// The on-screen button regions, so a platform that draws its own touch
+    /// overlay (iOS) can mirror the exact hit areas instead of duplicating the
+    /// grid maths.
+    pub fn areas(&self) -> &HashMap<UscButton, Rect> {
+        &self.button_areas
+    }
+
+    pub fn screen_size(&self) -> Vec2 {
+        self.screen_size
+    }
 }

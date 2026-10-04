@@ -5587,6 +5587,7 @@ dependencies = [
  "clap",
  "directories",
  "egui 0.31.1",
+ "egui-winit",
  "egui_glow",
  "egui_inspect",
  "egui_plot",

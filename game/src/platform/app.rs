@@ -19,7 +19,7 @@ use crate::async_service::AsyncService;
 use crate::button_codes::LaserState;
 use crate::companion_interface::CompanionServer;
 use crate::config::{Args, GameConfig};
-use crate::egui_host::IosEgui;
+use crate::egui_host::{EguiHost, IosEgui};
 use crate::game_main::GameMain;
 use crate::help::ServiceHelper;
 use crate::input_state::InputState;
@@ -106,6 +106,10 @@ impl IosApp {
             // like `window::create_window` does.
             Mutex::new(canvas)
         };
+        // The egui host paints through the same canvas the skins use, which it
+        // resolves from `Vgfx` when it draws.
+        let canvas = Arc::new(canvas);
+        let egui = IosEgui::new(render.size().0, render.size().1, scale);
 
         let services = ServiceCollection::new()
             .add(AsyncService::singleton().as_mut())
@@ -170,7 +174,10 @@ impl IosApp {
         let game = GameMain::new(
             scenes,
             femtovg::Paint::color(femtovg::Color::white()),
-            IosEgui::default(),
+            // egui integration; on iOS the settings and download screens are
+            // egui-only, so without a working rasterizer they render as a black
+            // screen. The host paints through the same canvas the skins use.
+            egui,
             GameConfig::get().args.debug,
             services.create_scope(),
         );
@@ -236,11 +243,32 @@ impl IosApp {
         let _ = self.frame_tracker.tick();
         self.frame_tracker.advance();
         let _exit = self.game.render_ios(frame_input, &mut self.render);
+
+        // The on-screen controller is drawn after the scenes but before egui,
+        // so egui screens (settings, downloads) stay readable on top.
+        {
+            let vgfx = self.game.vgfx();
+            let canvas = {
+                let vgfx = vgfx.read().expect("Lock error");
+                vgfx.canvas.clone()
+            };
+            let mut canvas = canvas.lock().expect("Lock error");
+            canvas.save();
+            self.touch.paint_overlay(&mut canvas);
+            canvas.restore();
+            canvas.flush();
+        }
         self.render.drain_error("after render_ios", frame_no);
     }
 
     pub fn on_touch(&mut self, id: u64, x: f64, y: f64, phase: i32) {
         let phase = crate::platform::input::TouchPhase::from_raw(phase);
+        // egui-owned screens (settings, downloads) get the raw touch so their
+        // widgets can be clicked. Only when egui does not want the pointer does
+        // the on-screen button grid see it.
+        if self.game.route_egui_touch(id, x, y, phase) {
+            return;
+        }
         for event in self.touch.update(id, x, y, phase) {
             self.game.handle_input_event(event);
         }

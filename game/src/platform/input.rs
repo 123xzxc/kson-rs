@@ -86,6 +86,84 @@ impl IosTouchState {
         self.virtual_buttons
     }
 
+    /// Draws the on-screen controller over the framebuffer.
+    ///
+    /// The hit areas already exist but were invisible, so the player had no way
+    /// to know where the buttons or the laser knobs were. The laser columns are
+    /// drawn as knobs, everything else as buttons.
+    pub fn paint_overlay(&self, canvas: &mut femtovg::Canvas<femtovg::renderer::OpenGl>) {
+        if !self.virtual_buttons {
+            return;
+        }
+        use femtovg::{Color, Paint, Path};
+        use crate::button_codes::UscButton;
+
+        let size = self.helper.screen_size();
+        let _ = canvas.save();
+        canvas.set_global_alpha(1.0);
+
+        // Background panels so the buttons stay readable over bright skins.
+        let mut backdrop = Path::new();
+        backdrop.rect(0.0, 0.0, size.x, size.y / 4.0 * 4.0);
+        canvas.fill_path(
+            &backdrop,
+            &Paint::color(Color::rgba(0, 0, 0, 60)),
+        );
+
+        for (button, area) in self.helper.areas() {
+            let cx = (area.min.x + area.max.x) * 0.5;
+            let cy = (area.min.y + area.max.y) * 0.5;
+            match button {
+                UscButton::Laser(_, _) => {
+                    // A knob: a ring plus a radial pointer.
+                    let radius = (area.width().min(area.height()) * 0.30).max(18.0);
+                    let mut ring = Path::new();
+                    ring.circle(cx, cy, radius);
+                    canvas.stroke_path(
+                        &ring,
+                        &Paint::color(Color::rgba(255, 255, 255, 150)).with_line_width(6.0),
+                    );
+                    let mut fill = Path::new();
+                    fill.circle(cx, cy, radius * 0.55);
+                    canvas.fill_path(&fill, &Paint::color(Color::rgba(255, 255, 255, 55)));
+                    // Pointer showing the neutral direction, one per side.
+                    let dir_left = matches!(button, UscButton::Laser(_, kson::Side::Left));
+                    let (dx, dy) = if dir_left { (-radius * 0.6, -radius * 0.6) } else { (radius * 0.6, -radius * 0.6) };
+                    let mut pointer = Path::new();
+                    pointer.move_to(cx, cy);
+                    pointer.line_to(cx + dx, cy + dy);
+                    canvas.stroke_path(
+                        &pointer,
+                        &Paint::color(Color::rgba(255, 255, 255, 220)).with_line_width(8.0),
+                    );
+                }
+                UscButton::FX(_) => {
+                    let mut r = Path::new();
+                    r.rounded_rect(
+                        area.min.x + 6.0,
+                        area.min.y + 6.0,
+                        area.width() - 12.0,
+                        area.height() - 12.0,
+                        14.0,
+                    );
+                    canvas.fill_path(&r, &Paint::color(Color::rgba(120, 200, 255, 70)));
+                }
+                _ => {
+                    let mut r = Path::new();
+                    r.rounded_rect(
+                        area.min.x + 6.0,
+                        area.min.y + 6.0,
+                        area.width() - 12.0,
+                        area.height() - 12.0,
+                        14.0,
+                    );
+                    canvas.fill_path(&r, &Paint::color(Color::rgba(255, 255, 255, 55)));
+                }
+            }
+        }
+        let _ = canvas.restore();
+    }
+
     pub fn set_virtual_buttons(&mut self, enabled: bool) {
         self.virtual_buttons = enabled;
     }

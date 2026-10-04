@@ -114,6 +114,7 @@ include_dir = "0.7"
 winit = { version = "0.30", features = ["serde"] }
 gilrs-ios-stub = { path = "../ios/gilrs-stub" }
 egui_glow = { workspace = true, features = ["winit"] }
+egui-winit = { version = "0.31", default-features = false, features = ["clipboard"] }
 glow = "0.16"
 # femtovg pins glow 0.13, and its `set_screen_target` takes *that* version's
 # `NativeFramebuffer`. Alias the same version so the iOS canvas setup can pass
