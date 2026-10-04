@@ -525,7 +525,18 @@ impl GameConfig {
         if let Err(e) = toml::to_string_pretty(self)
             .map_err(|e| anyhow::anyhow!(e))
             .and_then(|data| {
-                std::fs::write(&self.config_file, data).map_err(|e| anyhow::anyhow!(e))
+                if let Some(parent) = self.config_file.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| anyhow::anyhow!(e))?;
+                }
+                std::fs::write(&self.config_file, data).map_err(|e| anyhow::anyhow!(e))?;
+                // Read the size back so a silent no-op (or a path pointing at
+                // something that is not a regular file) shows up in the log on
+                // platforms where the sandbox can redirect writes.
+                let written = std::fs::metadata(&self.config_file)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                info!("Wrote config: {} bytes", written);
+                Ok(())
             })
         {
             error!("Could not save config: {e}")
@@ -534,7 +545,14 @@ impl GameConfig {
         if let Err(e) = toml::to_string_pretty(&self.skin_settings)
             .map_err(|e| anyhow::anyhow!(e))
             .and_then(|data| {
-                std::fs::write(self.skin_config_path(), data).map_err(|e| anyhow::anyhow!(e))
+                let path = self.skin_config_path();
+                if let Some(parent) = path.parent() {
+                    // The skin_config lives under `skins/<name>/`, which a
+                    // fresh iOS install has not created yet, so the old write
+                    // failed with ENOENT and lost every skin setting.
+                    std::fs::create_dir_all(parent).map_err(|e| anyhow::anyhow!(e))?;
+                }
+                std::fs::write(&path, data).map_err(|e| anyhow::anyhow!(e))
             })
         {
             error!("Could not save skin config: {e}")
