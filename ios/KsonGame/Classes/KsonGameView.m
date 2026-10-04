@@ -39,6 +39,18 @@ void eagl_present_renderbuffer(EAGLContext *context, uint32_t framebuffer) {
     // currently bound framebuffer's color attachment *is* that renderbuffer.
     // Without this the call fails with GL_INVALID_OPERATION.
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    // EAGL presents whatever renderbuffer is *bound*, not what is attached to
+    // the framebuffer. femtovg and three-d bind their own renderbuffers while
+    // drawing, so re-bind the drawable's before presenting; otherwise the call
+    // fails with GL_INVALID_OPERATION.
+    GLint attachedRb = 0;
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER,
+                                          GL_COLOR_ATTACHMENT0,
+                                          GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,
+                                          &attachedRb);
+    if (attachedRb != 0) {
+        glBindRenderbuffer(GL_RENDERBUFFER, (GLuint)attachedRb);
+    }
     [context presentRenderbuffer:GL_RENDERBUFFER];
 }
 

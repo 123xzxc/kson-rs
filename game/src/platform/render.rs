@@ -189,8 +189,11 @@ impl RenderContext {
             // when its color attachment is not the drawable renderbuffer.
             let bound = unsafe { self.glow.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING) };
             let status = unsafe { self.glow.check_framebuffer_status(glow::FRAMEBUFFER) };
+            // EAGL presents the *bound* renderbuffer, so its binding is the
+            // state that decides whether the call succeeds.
+            let bound_rb = unsafe { self.glow.get_parameter_i32(glow::RENDERBUFFER_BINDING) };
             log::info!(
-                "present #{n} fb={} bound={bound} status=0x{status:x} size={w}x{h} scale={} before=0x{before:x} after=0x{err:x}",
+                "present #{n} fb={} bound={bound} rb={bound_rb} status=0x{status:x} size={w}x{h} scale={} before=0x{before:x} after=0x{err:x}",
                 self.framebuffer,
                 self.scale
             );
