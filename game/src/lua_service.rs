@@ -61,6 +61,10 @@ impl LuaProvider {
         set_global_env(GameDataLua, "game", &lua)?;
         set_global_env(LuaPath, "path", &lua)?;
         set_global_env(ExportLuaHttp, "http", &lua)?;
+        // The shipped skins call `Http.GetAsync` (the upstream USC spelling);
+        // Lua is case sensitive, so without this alias `Http` is nil and
+        // `downloadscreen.lua` dies on load, leaving Get Songs blank.
+        set_global_env(ExportLuaHttp, "Http", &lua)?;
         set_global_env(InternetRankingLua, "IRData", &lua)?;
         set_global_env(InternetRankingLua, "IR", &lua)?;
 
