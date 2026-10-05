@@ -7,6 +7,7 @@
 //! that touch input and the desktop gilrs thread produce.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
@@ -163,14 +164,11 @@ impl BindingKind {
 /// That map is keyed by a controller UUID; iOS has no `gilrs` so the bridge
 /// synthesises a fixed one. Keeping the bindings in the normal config means
 /// they are written by every `config.save()` and reloaded on the next launch.
-const IOS_BINDINGS_UUID: uuid::Uuid = uuid::Uuid::from_u128(0x6b73_6f6e_5f69_6f73_5f62_696e_6400);
+const IOS_BINDINGS_UUID: uuid::Uuid = uuid::Uuid::from_u128(0x6b73_6f6e_5f69_6f73_5f62_696e_6402);
 
 /// Copies the persisted bindings into the in-memory map. Called once at
 /// startup, right after the config is loaded.
 pub fn load_bindings() {
-    let Ok(mut map) = bindings().lock() else {
-        return;
-    };
     let stored = match crate::config::GameConfig::get()
         .controller_binds
         .get(&IOS_BINDINGS_UUID)
@@ -178,12 +176,13 @@ pub fn load_bindings() {
         Some(stored) => stored.clone(),
         None => return,
     };
+    let mut candidate = default_bindings();
     // The config stores the raw index in the `Code` of a synthetic `Button`
     // (`kind` in the high bits) so it round-trips through the same serde
     // representation the desktop bindings use.
     for (button, code) in &stored.buttons {
         if let Some(usc) = usc_from_button(*button) {
-            map.insert(
+            candidate.insert(
                 usc,
                 BindingRef {
                     kind: BindingKind::Button,
@@ -194,7 +193,7 @@ pub fn load_bindings() {
     }
     for (axis, code) in &stored.axis {
         if let Some(usc) = usc_from_axis(*axis) {
-            map.insert(
+            candidate.insert(
                 usc,
                 BindingRef {
                     kind: BindingKind::Axis,
@@ -203,7 +202,29 @@ pub fn load_bindings() {
             );
         }
     }
-    log::info!("Loaded {} iOS gamepad bindings", map.len());
+
+    // A config written before the axes were corrected put both knobs on the
+    // same axis, which makes the left knob unreachable. Rather than load a
+    // mapping that cannot work, fall back to the defaults.
+    let knob_axis = |side: Side| {
+        [Side::Left, Side::Right].iter().find_map(|dir| {
+            candidate
+                .get(&UscButton::Laser(side, *dir))
+                .filter(|binding| binding.kind == BindingKind::Axis)
+                .map(|binding| binding.index)
+        })
+    };
+    let (left, right) = (knob_axis(Side::Left), knob_axis(Side::Right));
+    if left.is_some() && left == right {
+        log::warn!("Ignoring stored gamepad bindings: both knobs on axis {left:?}");
+        return;
+    }
+
+    let count = candidate.len();
+    if let Ok(mut map) = bindings().lock() {
+        *map = candidate;
+    }
+    log::info!("Loaded {count} iOS gamepad bindings");
 }
 
 /// Writes the in-memory bindings back into the config. The caller is expected
@@ -501,14 +522,16 @@ fn wrapped_step(delta: f32) -> f32 {
 }
 
 /// A step smaller than this is noise on a parked knob, not a turn.
-const AXIS_STEP_DEADZONE: f32 = 0.004;
+///
+/// One encoder detent moves the axis by about 0.078 (the firmware steps the
+/// 0..511 position by 10), so this only rejects noise.
+const AXIS_STEP_DEADZONE: f32 = 0.01;
 
 /// How far a step of the axis turns the knob.
 ///
-/// `take_laser_input` scales its input by 0.45, and the laser wants roughly a
-/// quarter turn per encoder step, so the step is scaled up to match. Tuned so
-/// one detent of the encoder moves the laser a visible but controllable amount.
-const KNOB_AXIS_TO_LASER: f32 = 0.9;
+/// Tuned so one detent of the encoder moves the laser a visible but
+/// controllable amount once `take_laser_input` has scaled it by 0.45.
+const KNOB_AXIS_TO_LASER: f32 = 4.0;
 
 /// Drains the pending events and folds them into `UscInputEvent`s.
 ///
@@ -535,6 +558,12 @@ pub fn drain(knob_state: &mut LaserState) -> Vec<UscInputEvent> {
                     continue;
                 };
                 let step = wrapped_step(value - previous);
+                // Log the first few steps of a session so a "knob does nothing"
+                // report can be told apart from a wrong binding.
+                static AXIS_LOG: AtomicUsize = AtomicUsize::new(0);
+                if AXIS_LOG.fetch_add(1, Ordering::Relaxed) < 40 {
+                    log::info!("knob {side:?} axis={value:.4} step={step:.4}");
+                }
                 if step.abs() < AXIS_STEP_DEADZONE {
                     continue;
                 }

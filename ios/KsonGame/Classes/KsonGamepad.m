@@ -38,10 +38,6 @@ typedef NS_ENUM(int32_t, KsonGamepadAxisRef) {
     KsonGamepadAxisRightY = 3,
 };
 
-/// Ignore tiny stick deflections so a resting controller reports a stable
-/// centre position instead of drifting the laser.
-static const float KsonStickDeadzone = 0.12f;
-
 @implementation KsonGamepad
 
 + (void)start {
@@ -167,26 +163,26 @@ static const float KsonStickDeadzone = 0.12f;
     pad.leftThumbstick.valueChangedHandler =
         ^(GCControllerDirectionPad *dpad, float x, float y) {
             (void)dpad;
-            float vertical = [self applyDeadzone:y];
-            float horizontal = [self applyDeadzone:x];
+            // No deadzone here: the PHAC knobs report an absolute position,
+            // and squashing the middle of that range to zero would turn every
+            // pass through it into a jump. The Rust side rejects noise on the
+            // step instead.
             // While a binding is being captured any axis that moves is
             // recorded instead of turning a knob.
             if ([self captureAxes]) {
                 return;
             }
-            [self feedKnobsX:horizontal y:vertical xRef:KsonGamepadAxisLeftX yRef:KsonGamepadAxisLeftY];
+            [self feedKnobsX:x y:y xRef:KsonGamepadAxisLeftX yRef:KsonGamepadAxisLeftY];
         };
     // The right stick is free by default, but it is still reported so it can be
     // bound from the settings screen.
     pad.rightThumbstick.valueChangedHandler =
         ^(GCControllerDirectionPad *dpad, float x, float y) {
             (void)dpad;
-            float vertical = [self applyDeadzone:y];
-            float horizontal = [self applyDeadzone:x];
             if ([self captureAxes]) {
                 return;
             }
-            [self feedKnobsX:horizontal y:vertical xRef:KsonGamepadAxisRightX yRef:KsonGamepadAxisRightY];
+            [self feedKnobsX:x y:y xRef:KsonGamepadAxisRightX yRef:KsonGamepadAxisRightY];
         };
 }
 
@@ -279,13 +275,6 @@ static const float KsonStickDeadzone = 0.12f;
         }
         kson_ios_gamepad_button((int32_t)button, pressed);
     };
-}
-
-+ (float)applyDeadzone:(float)value {
-    if (fabsf(value) < KsonStickDeadzone) {
-        return 0.0f;
-    }
-    return value;
 }
 
 @end
