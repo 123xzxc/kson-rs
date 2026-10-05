@@ -529,9 +529,15 @@ const AXIS_STEP_DEADZONE: f32 = 0.01;
 
 /// How far a step of the axis turns the knob.
 ///
-/// Tuned so one detent of the encoder moves the laser a visible but
-/// controllable amount once `take_laser_input` has scaled it by 0.45.
-const KNOB_AXIS_TO_LASER: f32 = 4.0;
+/// One encoder detent moves the axis by about 0.078, and the laser wants a
+/// modest nudge per detent so a small correction stays controllable.
+const KNOB_AXIS_TO_LASER: f32 = 1.5;
+
+/// Which way the axis turns the laser.
+///
+/// The firmware reports the knob's position, and increasing position runs
+/// opposite to the laser's own direction, so the step is negated.
+const KNOB_AXIS_SIGN: f32 = -1.0;
 
 /// Drains the pending events and folds them into `UscInputEvent`s.
 ///
@@ -572,7 +578,7 @@ pub fn drain(knob_state: &mut LaserState) -> Vec<UscInputEvent> {
                 // never cleared elsewhere, so without the reset the delta would
                 // grow every frame until the laser sat pinned at one end.
                 knob_state.zero_deltas();
-                knob_state.update_delta(side, step * KNOB_AXIS_TO_LASER);
+                knob_state.update_delta(side, step * KNOB_AXIS_TO_LASER * KNOB_AXIS_SIGN);
                 out.push(UscInputEvent::Laser(*knob_state, time));
             }
         }
