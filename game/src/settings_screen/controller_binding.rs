@@ -246,6 +246,15 @@ impl IosBindingUi {
         let Some(button) = self.currently_binding.take() else {
             return false;
         };
+        // A hand controller reports its two knobs as the left stick's X and Y,
+        // and the game reads both laser quadrants of a side from one axis, so
+        // binding any quadrant of a side binds the whole side. Record the axis
+        // on the canonical quadrant so the settings list and the runtime lookup
+        // agree.
+        let button = match button {
+            UscButton::Laser(side, _) => UscButton::Laser(side, kson::Side::Left),
+            other => other,
+        };
         crate::platform::gamepad::bind_axis(button, axis_index);
         log::info!("Bound {} to gamepad axis {}", button.as_str(), axis_index);
         true

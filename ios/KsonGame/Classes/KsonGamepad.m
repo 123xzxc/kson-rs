@@ -174,7 +174,7 @@ static const float KsonStickDeadzone = 0.12f;
             if ([self captureAxes]) {
                 return;
             }
-            [self feedKnobsX:horizontal y:vertical];
+            [self feedKnobsX:horizontal y:vertical xRef:KsonGamepadAxisLeftX yRef:KsonGamepadAxisLeftY];
         };
     // The right stick is free by default, but it is still reported so it can be
     // bound from the settings screen.
@@ -186,16 +186,16 @@ static const float KsonStickDeadzone = 0.12f;
             if ([self captureAxes]) {
                 return;
             }
-            [self feedKnobsX:horizontal y:vertical];
+            [self feedKnobsX:horizontal y:vertical xRef:KsonGamepadAxisRightX yRef:KsonGamepadAxisRightY];
         };
 }
 
 /// Feeds one stick's axes into whichever knobs are bound to them.
 ///
-/// Two axes map onto each knob by default (the left stick's X and Y), so both
-/// are reported and the game decides which knob each one belongs to.
-/// `KsonGamepadAxisLeftX` is 0, `LeftY` 1, `RightX` 2 and `RightY` 3.
-+ (void)feedKnobsX:(float)x y:(float)y {
+/// `xRef`/`yRef` name the two physical axes this stick reports, so a knob
+/// bound to (say) the right stick's Y is turned by the right stick and not the
+/// left one. `KsonGamepadAxisLeftX` is 0, `LeftY` 1, `RightX` 2, `RightY` 3.
++ (void)feedKnobsX:(float)x y:(float)y xRef:(int32_t)xRef yRef:(int32_t)yRef {
     // Ask once per knob which axis it is on, then feed the matching deflection.
     // The default (=-1) falls back to the built-in pairing, which is also what
     // happens before the settings screen has ever run.
@@ -209,16 +209,16 @@ static const float KsonStickDeadzone = 0.12f;
     }
 
     if (x != 0.0f) {
-        if (leftAxis == KsonGamepadAxisLeftX) {
+        if (leftAxis == xRef) {
             kson_ios_gamepad_axis(0, x);
-        } else if (rightAxis == KsonGamepadAxisLeftX) {
+        } else if (rightAxis == xRef) {
             kson_ios_gamepad_axis(1, x);
         }
     }
     if (y != 0.0f) {
-        if (leftAxis == KsonGamepadAxisLeftY) {
+        if (leftAxis == yRef) {
             kson_ios_gamepad_axis(0, y);
-        } else if (rightAxis == KsonGamepadAxisLeftY) {
+        } else if (rightAxis == yRef) {
             kson_ios_gamepad_axis(1, y);
         }
     }

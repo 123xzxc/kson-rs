@@ -137,6 +137,149 @@ pub enum BindingKind {
     Axis,
 }
 
+impl BindingKind {
+    fn as_code(self) -> u32 {
+        match self {
+            Self::Button => 0,
+            Self::Axis => 1,
+        }
+    }
+
+    fn from_code(code: u32) -> Self {
+        if code == 1 {
+            Self::Axis
+        } else {
+            Self::Button
+        }
+    }
+}
+
+/// Key under which the iOS bindings live in `GameConfig::controller_binds`.
+///
+/// That map is keyed by a controller UUID; iOS has no `gilrs` so the bridge
+/// synthesises a fixed one. Keeping the bindings in the normal config means
+/// they are written by every `config.save()` and reloaded on the next launch.
+const IOS_BINDINGS_UUID: uuid::Uuid = uuid::Uuid::from_u128(0x6b73_6f6e_5f69_6f73_5f62_696e_6400);
+
+/// Copies the persisted bindings into the in-memory map. Called once at
+/// startup, right after the config is loaded.
+pub fn load_bindings() {
+    let Ok(mut map) = bindings().lock() else {
+        return;
+    };
+    let stored = match crate::config::GameConfig::get()
+        .controller_binds
+        .get(&IOS_BINDINGS_UUID)
+    {
+        Some(stored) => stored.clone(),
+        None => return,
+    };
+    // The config stores the raw index in the `Code` of a synthetic `Button`
+    // (`kind` in the high bits) so it round-trips through the same serde
+    // representation the desktop bindings use.
+    for (button, code) in &stored.buttons {
+        if let Some(usc) = usc_from_button(*button) {
+            map.insert(
+                usc,
+                BindingRef {
+                    kind: BindingKind::Button,
+                    index: code.into_u32() as i32,
+                },
+            );
+        }
+    }
+    for (axis, code) in &stored.axis {
+        if let Some(usc) = usc_from_axis(*axis) {
+            map.insert(
+                usc,
+                BindingRef {
+                    kind: BindingKind::Axis,
+                    index: code.into_u32() as i32,
+                },
+            );
+        }
+    }
+    log::info!("Loaded {} iOS gamepad bindings", map.len());
+}
+
+/// Writes the in-memory bindings back into the config. The caller is expected
+/// to `config.save()` afterwards.
+pub fn store_bindings() {
+    let Ok(map) = bindings().lock() else {
+        return;
+    };
+    let mut entry = crate::button_codes::CustomControlleMap::default();
+    for (button, binding) in map.iter() {
+        let code = crate::gilrs_compat::ev::Code(binding.index as u32);
+        match binding.kind {
+            BindingKind::Button => {
+                if let Some(gilrs) = gilrs_button_from_usc(*button) {
+                    entry.buttons.insert(gilrs, code);
+                }
+            }
+            BindingKind::Axis => {
+                if let Some(gilrs) = gilrs_axis_from_usc(*button) {
+                    entry.axis.insert(gilrs, code);
+                }
+            }
+        }
+    }
+    let mut config = crate::config::GameConfig::get_mut();
+    config
+        .controller_binds
+        .insert(IOS_BINDINGS_UUID, entry);
+}
+
+/// Maps a bound `UscButton` onto a `gilrs` button for storage. Only the buttons
+/// the bridge numbers are representable; anything else is dropped.
+fn gilrs_button_from_usc(button: UscButton) -> Option<crate::gilrs_compat::Button> {
+    use crate::gilrs_compat::Button as G;
+    Some(match button {
+        UscButton::BT(kson::BtLane::A) => G::South,
+        UscButton::BT(kson::BtLane::B) => G::East,
+        UscButton::BT(kson::BtLane::C) => G::North,
+        UscButton::BT(kson::BtLane::D) => G::West,
+        UscButton::FX(Side::Left) => G::LeftTrigger,
+        UscButton::FX(Side::Right) => G::RightTrigger,
+        UscButton::Start => G::Start,
+        UscButton::Back => G::Select,
+        _ => return None,
+    })
+}
+
+fn gilrs_axis_from_usc(button: UscButton) -> Option<crate::gilrs_compat::Axis> {
+    use crate::gilrs_compat::Axis as A;
+    Some(match button {
+        UscButton::Laser(Side::Left, _) => A::LeftStickX,
+        UscButton::Laser(Side::Right, _) => A::LeftStickY,
+        _ => return None,
+    })
+}
+
+fn usc_from_button(button: crate::gilrs_compat::Button) -> Option<UscButton> {
+    use crate::gilrs_compat::Button as G;
+    Some(match button {
+        G::South => UscButton::BT(kson::BtLane::A),
+        G::East => UscButton::BT(kson::BtLane::B),
+        G::North => UscButton::BT(kson::BtLane::C),
+        G::West => UscButton::BT(kson::BtLane::D),
+        G::LeftTrigger => UscButton::FX(Side::Left),
+        G::RightTrigger => UscButton::FX(Side::Right),
+        G::Start => UscButton::Start,
+        G::Select => UscButton::Back,
+        _ => return None,
+    })
+}
+
+fn usc_from_axis(axis: crate::gilrs_compat::Axis) -> Option<UscButton> {
+    use crate::gilrs_compat::Axis as A;
+    Some(match axis {
+        A::LeftStickX => UscButton::Laser(Side::Left, Side::Left),
+        A::LeftStickY => UscButton::Laser(Side::Right, Side::Left),
+        _ => return None,
+    })
+}
+
 /// Which knob each physical axis drives.
 ///
 /// Only the left stick is used: its vertical axis turns the left knob and its
@@ -197,6 +340,7 @@ pub fn bind_button(button: UscButton, index: i32) {
             },
         );
     }
+    persist_bindings();
 }
 
 /// Binds a laser knob to a physical stick axis. See [`bind_button`].
@@ -210,6 +354,7 @@ pub fn bind_axis(button: UscButton, index: i32) {
             },
         );
     }
+    persist_bindings();
 }
 
 /// Removes every binding of one controller, so "Clear All" works.
@@ -217,6 +362,15 @@ pub fn clear_bindings() {
     if let Ok(mut bindings) = bindings().lock() {
         bindings.clear();
     }
+    persist_bindings();
+}
+
+/// Mirrors the in-memory map into `GameConfig` and writes it to disk, so a
+/// binding survives a relaunch. Errors are logged, never fatal: a read-only
+/// container should not break input.
+fn persist_bindings() {
+    store_bindings();
+    crate::config::GameConfig::get().save();
 }
 
 /// Returns the binding for `button`, if any.
@@ -308,15 +462,30 @@ pub fn push_button(raw_button: i32, pressed: bool) {
 /// the physical stick onto them so only the left stick is used: its vertical
 /// axis turns the left knob and its horizontal axis turns the right one.
 pub fn push_axis(knob: i32, value: f32) {
-    // Diagnostic: a physical controller (especially an arcade hand controller)
-    // may report its knobs on an axis the bridge never forwards, so log every
-    // deflection that actually reaches the game.
-    log::info!("gamepad axis knob={knob} value={value:.3}");
     let side = if knob == 0 { Side::Left } else { Side::Right };
     if let Ok(mut q) = queue().lock() {
         q.push_back(GamepadEvent::Axis(side, value, now()));
     }
 }
+
+/// The last raw axis value seen for the left and right knob.
+///
+/// A stick that returns to centre reports an absolute position, but an arcade
+/// hand controller's lever stays where it was let go, so the only meaningful
+/// signal is the change since the previous report. Keeping the previous value
+/// here lets [`drain`] turn absolute axis reports into the relative knob deltas
+/// the game expects (the same shape `mouse_knobs` and the on-screen drag use).
+fn last_axis() -> &'static Mutex<[f32; 2]> {
+    static LAST: OnceLock<Mutex<[f32; 2]>> = OnceLock::new();
+    LAST.get_or_init(|| Mutex::new([0.0, 0.0]))
+}
+
+/// How much one full deflection of the stick turns a knob.
+///
+/// The laser reads a position in half-turns (`0.45` per input in
+/// `take_laser_input`), so a full sweep has to cover a comparable angle to feel
+/// like the arcade knob.
+const AXIS_TO_LASER: f32 = 4.0;
 
 /// Drains the pending events and folds them into `UscInputEvent`s.
 ///
@@ -333,7 +502,22 @@ pub fn drain(knob_state: &mut LaserState) -> Vec<UscInputEvent> {
                 out.push(UscInputEvent::Button(button, state, time));
             }
             GamepadEvent::Axis(side, value, time) => {
-                knob_state.update(side, value);
+                // Turn the absolute axis report into a delta since the previous
+                // one, so a lever that does not spring back still reads as a
+                // knob turn rather than snapping the laser to a fixed angle.
+                let index = if side == Side::Left { 0 } else { 1 };
+                let delta = match last_axis().lock() {
+                    Ok(mut last) => {
+                        let delta = (value - last[index]) * AXIS_TO_LASER;
+                        last[index] = value;
+                        delta
+                    }
+                    Err(_) => 0.0,
+                };
+                if delta == 0.0 {
+                    continue;
+                }
+                knob_state.update_delta(side, delta);
                 out.push(UscInputEvent::Laser(*knob_state, time));
             }
         }

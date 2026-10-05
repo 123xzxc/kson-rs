@@ -373,6 +373,8 @@ pub unsafe extern "C" fn kson_ios_init(
     let mut config_path = installer::default_game_dir();
     config_path.push("Main.cfg");
     GameConfig::init(config_path, Args::default());
+    // Restore the bindings the player saved on a previous run.
+    crate::platform::gamepad::load_bindings();
 
     let render = match RenderContext::new(eagl_context, framebuffer, width, height, scale) {
         Ok(r) => r,

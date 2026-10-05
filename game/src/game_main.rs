@@ -1320,7 +1320,17 @@ impl GameMain {
                         .for_each_active_mut(|x| x.on_button_released(b, time)),
                 }
             }
-            UscInputEvent::Laser(ls, _) => self.knob_state = ls,
+            UscInputEvent::Laser(ls, time) => {
+                // Menu screens read `knob_state`, but gameplay only reacts to
+                // the `Laser` event itself (`Game::on_event` buffers the delta
+                // for the tick loop). iOS has no winit loop to do the second
+                // half, so deliver it here as well; without this the knobs work
+                // on the title screen and nowhere else.
+                self.knob_state = ls;
+                self.scenes.for_each_active_mut(|scene| {
+                    scene.on_event(&winit::event::Event::UserEvent(UscInputEvent::Laser(ls, time)))
+                });
+            }
             UscInputEvent::ClientEvent(_) => {}
         }
     }
