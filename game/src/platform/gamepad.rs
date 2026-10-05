@@ -567,8 +567,11 @@ pub fn drain(knob_state: &mut LaserState) -> Vec<UscInputEvent> {
                 if step.abs() < AXIS_STEP_DEADZONE {
                     continue;
                 }
-                // The game reads the laser in half-turns of the knob, so a full
-                // sweep of the axis has to cover a comparable angle.
+                // Each event must carry only its own rotation. `update_delta`
+                // adds to whatever the state already holds, and this state is
+                // never cleared elsewhere, so without the reset the delta would
+                // grow every frame until the laser sat pinned at one end.
+                knob_state.zero_deltas();
                 knob_state.update_delta(side, step * KNOB_AXIS_TO_LASER);
                 out.push(UscInputEvent::Laser(*knob_state, time));
             }
