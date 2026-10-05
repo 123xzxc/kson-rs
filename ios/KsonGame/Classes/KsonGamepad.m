@@ -1,5 +1,8 @@
 #import "KsonGamepad.h"
 
+// `fabsf`, used to measure how far a stick axis moved.
+#import <math.h>
+
 /// Must match `GamepadButton::from_raw` in `game/src/platform/gamepad.rs`.
 typedef NS_ENUM(int32_t, KsonGamepadButton) {
     KsonGamepadButtonSouth = 0,
@@ -167,11 +170,6 @@ typedef NS_ENUM(int32_t, KsonGamepadAxisRef) {
             // and squashing the middle of that range to zero would turn every
             // pass through it into a jump. The Rust side rejects noise on the
             // step instead.
-            // While a binding is being captured any axis that moves is
-            // recorded instead of turning a knob.
-            if ([self captureAxes]) {
-                return;
-            }
             [self feedKnobsX:x y:y xRef:KsonGamepadAxisLeftX yRef:KsonGamepadAxisLeftY];
         };
     // The right stick is free by default, but it is still reported so it can be
@@ -179,9 +177,6 @@ typedef NS_ENUM(int32_t, KsonGamepadAxisRef) {
     pad.rightThumbstick.valueChangedHandler =
         ^(GCControllerDirectionPad *dpad, float x, float y) {
             (void)dpad;
-            if ([self captureAxes]) {
-                return;
-            }
             [self feedKnobsX:x y:y xRef:KsonGamepadAxisRightX yRef:KsonGamepadAxisRightY];
         };
 }
@@ -195,12 +190,45 @@ typedef NS_ENUM(int32_t, KsonGamepadAxisRef) {
 /// the right. `xRef`/`yRef` name the axes this stick reports; LeftX is 0,
 /// LeftY 1, RightX 2 and RightY 3.
 + (void)feedKnobsX:(float)x y:(float)y xRef:(int32_t)xRef yRef:(int32_t)yRef {
+    // How far each of the four stick axes moved since the previous report.
+    // A binding is recorded from this, and a mirrored stick is spotted with
+    // it as well.
+    static float prevAxis[4];
+    static BOOL haveAxis[4];
+    float dx = haveAxis[xRef] ? fabsf(x - prevAxis[xRef]) : 0.0f;
+    float dy = haveAxis[yRef] ? fabsf(y - prevAxis[yRef]) : 0.0f;
+    prevAxis[xRef] = x;
+    prevAxis[yRef] = y;
+    haveAxis[xRef] = YES;
+    haveAxis[yRef] = YES;
+
+    // While a binding is being captured the axis that moved is recorded
+    // instead of turning a knob.
+    if ([self captureAxesX:xRef dx:dx yRef:yRef dy:dy]) {
+        return;
+    }
+
+    // Some hosts report the left stick's position for the right stick as well
+    // (the PHAC has no right stick). Feeding that mirrored movement to a knob
+    // would turn a second laser with the same knob, so it is ignored.
+    if (xRef != KsonGamepadAxisLeftX && haveAxis[KsonGamepadAxisLeftX] &&
+        x == prevAxis[KsonGamepadAxisLeftX] && y == prevAxis[KsonGamepadAxisLeftY]) {
+        return;
+    }
+
     int32_t leftKnobAxis = kson_ios_knob_axis(0);
     int32_t rightKnobAxis = kson_ios_knob_axis(1);
     if (leftKnobAxis < 0) {
         leftKnobAxis = KsonGamepadAxisLeftX;
     }
     if (rightKnobAxis < 0) {
+        rightKnobAxis = KsonGamepadAxisLeftY;
+    }
+    // A binding recorded while the wrong axis was moving can leave both knobs
+    // on one axis, which makes a knob unreachable. Fall back to the layout the
+    // firmware uses instead: the left knob on X, the right knob on Y.
+    if (leftKnobAxis == rightKnobAxis) {
+        leftKnobAxis = KsonGamepadAxisLeftX;
         rightKnobAxis = KsonGamepadAxisLeftY;
     }
 
@@ -218,27 +246,27 @@ typedef NS_ENUM(int32_t, KsonGamepadAxisRef) {
     }
 }
 
-/// Reports all four stick axes while the settings screen is capturing a
-/// binding, so a stick can be bound instead of moving a knob.
+/// Offers the axis that actually moved to the settings screen while it is
+/// capturing a binding, so a stick can be bound instead of moving a knob.
 ///
-/// Returns true when any of them completed a binding.
-+ (BOOL)captureAxes {
-    // Stop at the first axis that moved: otherwise a single stick push is
-    // recorded for all four axes, which is why every laser quadrant ended up
-    // bound to "axis 1".
-    if (kson_ios_capture_gamepad_axis(KsonGamepadAxisLeftY)) {
-        return YES;
+/// Only the moved axis is offered. Reporting every axis of the stick on every
+/// event is what recorded "axis 1" for every laser quadrant, and for the Back
+/// key, no matter which axis the player moved.
+///
+/// Returns true when the movement completed a binding.
++ (BOOL)captureAxesX:(int32_t)xRef dx:(float)dx yRef:(int32_t)yRef dy:(float)dy {
+    const float moved_enough = 0.02f;
+    BOOL x_moved = dx > moved_enough;
+    BOOL y_moved = dy > moved_enough;
+    if (!x_moved && !y_moved) {
+        return NO;
     }
-    if (kson_ios_capture_gamepad_axis(KsonGamepadAxisLeftX)) {
-        return YES;
+    // A stick pushed diagonally moves both axes; the one that moved further is
+    // the one the player meant.
+    if (x_moved && (!y_moved || dx >= dy)) {
+        return kson_ios_capture_gamepad_axis(xRef);
     }
-    if (kson_ios_capture_gamepad_axis(KsonGamepadAxisRightY)) {
-        return YES;
-    }
-    if (kson_ios_capture_gamepad_axis(KsonGamepadAxisRightX)) {
-        return YES;
-    }
-    return NO;
+    return kson_ios_capture_gamepad_axis(yRef);
 }
 
 + (void)attachBasicGamepad:(GCGamepad *)pad {

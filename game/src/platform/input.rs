@@ -76,6 +76,13 @@ pub struct IosTouchState {
     /// overlay, and is the only part of the panel that stays on screen when
     /// the buttons are hidden, so the panel can always be brought back.
     toggle_shown: bool,
+    /// Set while the panel is hidden because of the screen it is on rather than
+    /// by the player, so the player's own hide/show choice is left alone and
+    /// comes back with the next screen.
+    auto_hidden: bool,
+    /// What each live touch was decided to be: `true` when it presses the
+    /// panel, `false` when it is a menu drag.
+    panel_touch: std::collections::HashMap<u64, bool>,
 }
 
 impl IosTouchState {
@@ -92,6 +99,8 @@ impl IosTouchState {
             drags: std::collections::HashMap::new(),
             laser_drags: std::collections::HashMap::new(),
             toggle_shown: false,
+            auto_hidden: false,
+            panel_touch: std::collections::HashMap::new(),
         }
     }
 
@@ -107,6 +116,12 @@ impl IosTouchState {
     /// Whether touches are currently translated into virtual buttons.
     pub fn virtual_buttons_enabled(&self) -> bool {
         self.virtual_buttons
+    }
+
+    /// Hides the panel while a screen that has no use for it is up, and brings
+    /// the player's own setting back afterwards.
+    pub fn set_auto_hidden(&mut self, hidden: bool) {
+        self.auto_hidden = hidden;
     }
 
     /// Panels currently held, so the overlay can light them up.
@@ -130,6 +145,13 @@ impl IosTouchState {
         let held = self.held();
         let _ = canvas.save();
         canvas.set_global_alpha(1.0);
+
+        if self.auto_hidden {
+            // Hidden by the screen, not by the player: neither the panel nor
+            // the toggle is drawn, so the title screen stays clear.
+            let _ = canvas.restore();
+            return;
+        }
 
         // The toggle button is always on screen: it is the only way to bring
         // the panel back once it has been hidden.
@@ -253,6 +275,44 @@ impl IosTouchState {
                         3.0,
                     );
                     canvas.fill_path(&bar, &Paint::color(Color::rgba(255, 255, 255, 90)));
+                    // A glyph so the key can be told apart at a glance: the BT
+                    // keys carry their lane letter, and each FX bar points at
+                    // the side it belongs to.
+                    let glyph = Color::rgba(255, 255, 255, if active { 245 } else { 170 });
+                    match button {
+                        UscButton::BT(lane) => {
+                            let label = match lane {
+                                kson::BtLane::A => "A",
+                                kson::BtLane::B => "B",
+                                kson::BtLane::C => "C",
+                                kson::BtLane::D => "D",
+                            };
+                            // Best effort: the overlay shares the skin's canvas,
+                            // so the label is simply skipped when no font is
+                            // loaded for it.
+                            let _ = canvas.fill_text(
+                                cx,
+                                cy - h * 0.18,
+                                label,
+                                &Paint::color(glyph)
+                                    .with_font_size((h * 0.34).max(16.0))
+                                    .with_text_align(femtovg::Align::Center)
+                                    .with_text_baseline(femtovg::Baseline::Middle),
+                            );
+                        }
+                        UscButton::FX(side) => {
+                            let dir = if *side == kson::Side::Left { -1.0 } else { 1.0 };
+                            let mut arrow = Path::new();
+                            arrow.move_to(cx - dir * w * 0.12, cy - h * 0.15);
+                            arrow.line_to(cx + dir * w * 0.12, cy);
+                            arrow.line_to(cx - dir * w * 0.12, cy + h * 0.15);
+                            canvas.stroke_path(
+                                &arrow,
+                                &Paint::color(glyph).with_line_width((h * 0.07).max(3.0)),
+                            );
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -339,6 +399,60 @@ impl IosTouchState {
         self.virtual_buttons = enabled;
     }
 
+    /// Whether a touch lands on the panel itself (a key, a knob or the toggle).
+    ///
+    /// A menu turns a drag into a knob turn, but a touch that starts on a drawn
+    /// key has to press it instead, otherwise the panel is visible and dead on
+    /// every menu screen.
+    fn hit_panel(&self, x: f64, y: f64) -> bool {
+        if self.auto_hidden {
+            return false;
+        }
+        if self.on_toggle(x, y) {
+            return true;
+        }
+        if !self.virtual_buttons {
+            return false;
+        }
+        let point = Pos2::new(x as f32, y as f32);
+        self.helper.areas().values().any(|area| area.contains(point))
+    }
+
+    /// Routes a touch that could be either a panel press or a menu drag.
+    ///
+    /// The first event of a touch decides which it is, and the answer is kept
+    /// until the finger lifts: a finger that slides off a key still releases
+    /// it, and a swipe that passes over the panel does not press anything.
+    pub fn update_menu_or_panel(
+        &mut self,
+        id: u64,
+        x: f64,
+        y: f64,
+        phase: TouchPhase,
+    ) -> Vec<UscInputEvent> {
+        let panel = match self.panel_touch.get(&id).copied() {
+            Some(panel) => panel,
+            None => {
+                if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                    // Too late to change what this touch was.
+                    return self.update_menu_drag(id, x, y, phase);
+                }
+                let panel = self.hit_panel(x, y);
+                self.panel_touch.insert(id, panel);
+                panel
+            }
+        };
+        if panel {
+            let events = self.update(id, x, y, phase);
+            if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                self.panel_touch.remove(&id);
+            }
+            events
+        } else {
+            self.update_menu_drag(id, x, y, phase)
+        }
+    }
+
     /// Tracks the current touch set so a three-finger tap can toggle the
     /// on-screen buttons.
     ///
@@ -397,6 +511,12 @@ impl IosTouchState {
         phase: TouchPhase,
     ) -> Vec<UscInputEvent> {
         self.track_gesture(id, x, y, phase);
+        // On a screen the panel does not belong on (the title screen) nothing
+        // is drawn and no touch is consumed, so the menu receives the taps.
+        if self.auto_hidden {
+            self.toggle_shown = false;
+            return Vec::new();
+        }
         if !self.virtual_buttons {
             // Without the on-screen buttons the touch grid would cover the
             // whole screen and swallow menu taps, so touches fall through to

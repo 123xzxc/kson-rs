@@ -271,6 +271,11 @@ impl IosApp {
         self.render.drain_error("after game.update", frame_no);
         let _ = self.frame_tracker.tick();
         self.frame_tracker.advance();
+        // The panel is a gameplay controller: the title screen is driven by
+        // taps and the panel would sit on top of the menu, so it steps aside
+        // there and comes back as soon as another screen is up.
+        self.touch
+            .set_auto_hidden(self.game.top_scene_name() == Some("Main Menu"));
         self.flush_pending_touches();
         // The overlay is drawn inside `render_ios`, before the frame is
         // presented, through the same canvas the scenes use.
@@ -315,7 +320,10 @@ impl IosApp {
         // (song and difficulty wheels). Gameplay keeps the raw touch grid: a
         // drag there is a laser gesture, not a knob.
         if self.game.menu_wants_drag() {
-            for event in self.touch.update_menu_drag(id, x, y, phase) {
+            // A touch that starts on the drawn panel presses its key; anywhere
+            // else the drag scrolls the wheel, so the panel is usable on the
+            // menus as well as in game.
+            for event in self.touch.update_menu_or_panel(id, x, y, phase) {
                 self.game.handle_input_event(event);
             }
         } else {

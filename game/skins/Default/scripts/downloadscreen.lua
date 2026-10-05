@@ -228,6 +228,9 @@ function render_hotkeys()
     gfx.Text("FXR: Sorting", resX/2 + 20, resY - 10)
     gfx.TextAlign(gfx.TEXT_ALIGN_RIGHT, gfx.TEXT_ALIGN_BOTTOM)
     gfx.Text("FXL: Levels", resX/2 - 20, resY - 10)
+    gfx.FontSize(24)
+    gfx.TextAlign(gfx.TEXT_ALIGN_LEFT, gfx.TEXT_ALIGN_BOTTOM)
+    gfx.Text("Tap: select / tap again: download", 10, resY - 10)
     gfx.Restore()
 end
 
@@ -388,13 +391,19 @@ function reload_songs()
     
 end
 
+-- Starts the download of the entry under the cursor. Shared by the pad's
+-- Start key and by a tap on the entry that is already selected.
+function download_selected()
+    local song = songs[cursorPos + 1]
+    if song == nil then return end
+    dlScreen.DownloadArchive(encodeURI(song.cdn_download_url), header, song.id, archive_callback)
+    downloaded[song.id] = "Downloading..."
+end
+
 function button_pressed(button)
     if button == game.BUTTON_STA then
         if screenState == 0 then
-            local song = songs[cursorPos + 1]
-            if song == nil then return end
-            dlScreen.DownloadArchive(encodeURI(song.cdn_download_url), header, song.id, archive_callback)
-            downloaded[song.id] = "Downloading..."
+            download_selected()
         elseif screenState == 1 then
             if selectedLevels[levelcursor + 1] then 
                 selectedLevels[levelcursor + 1] = false
@@ -442,6 +451,49 @@ function button_pressed(button)
         dlcache:write(json.encode(downloaded))
         dlcache:close()
         dlScreen.Exit() 
+    end
+end
+
+-- Touch support. iOS turns a tap into a mouse press and the on-screen panel is
+-- the only other way in, so a tap selects the entry under the finger and a tap
+-- on the already selected entry starts its download.
+function mouse_pressed(button, mx, my)
+    if button ~= 0 then return end
+    if mx == nil then mx, my = game.GetMousePos() end
+    if screenState == 1 then
+        local index = math.floor((my - resY / 2) / 40 + 0.5) + levelcursor + 1
+        if index >= 1 and index <= 20 then
+            selectedLevels[index] = not selectedLevels[index]
+        else
+            screenState = 0
+        end
+        reload_songs()
+        return
+    elseif screenState == 2 then
+        local index = math.floor((my - resY / 2) / 40 + 0.5) + sortingcursor + 1
+        if sortingOptions[index] ~= nil then
+            selectedSorting = sortingOptions[index]
+        else
+            screenState = 0
+        end
+        reload_songs()
+        return
+    end
+    if loading then return end
+    local col = math.floor((mx - xOffset) / entryW)
+    local row = math.floor((my - 50 + yOffset * entryH) / entryH)
+    if col < 0 or col >= xCount or row < 0 then return end
+    local index = row * xCount + col + 1
+    if songs[index] == nil then return end
+    if cursorPos + 1 == index then
+        download_selected()
+        return
+    end
+    cursorPos = index - 1
+    cursorPosX = col
+    cursorPosY = row
+    if cursorPos > #songs - 6 then
+        load_more()
     end
 end
 

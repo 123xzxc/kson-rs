@@ -130,26 +130,28 @@ impl TouchHelper {
         let w = screen_size.x;
         let h = screen_size.y;
         let cx = w * 0.5;
-        let cy = h * 0.5;
 
         // A knob is round: its hit area is the square around the drawn circle,
         // sized from the shorter screen axis so it stays circular in both
         // orientations.
+        // The knobs sit above the key rows: keeping them clear of the BT keys
+        // matters because two overlapping hit areas would send a tap to
+        // whichever one the map happened to visit first.
         let knob_radius = (w.min(h) * 0.13).max(64.0);
-        let knob_y = cy;
+        let knob_y = h * 0.40;
         let knob_margin = w * 0.04;
 
         // Bottom row: BT keys and FX bars, sitting below the knobs.
-        let bt_size = (w.min(h) * 0.14).max(72.0);
-        let bt_gap = bt_size * 0.24;
+        let bt_size = (w.min(h) * 0.175).max(92.0);
+        let bt_gap = bt_size * 0.22;
         let bt_total = bt_size * 4.0 + bt_gap * 3.0;
-        let bt_y = h * 0.56;
+        let bt_y = h * 0.58;
         let bt_x0 = cx - bt_total * 0.5;
 
-        let fx_width = bt_total * 0.42;
-        let fx_height = bt_size * 0.72;
-        let fx_gap = bt_total * 0.16;
-        let fx_y = h * 0.75;
+        let fx_width = bt_total * 0.46;
+        let fx_height = bt_size * 0.78;
+        let fx_gap = bt_total * 0.14;
+        let fx_y = h * 0.80;
         let fx_x0 = cx - (fx_width * 2.0 + fx_gap) * 0.5;
 
         // Start is the pentagon above the BT row; Back is the small glyph in

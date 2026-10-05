@@ -1396,6 +1396,13 @@ impl GameMain {
         self.scenes.menu_wants_drag()
     }
 
+    /// The name of the scene on top, so the iOS overlay can tell the title
+    /// screen (which is driven by taps) from the screens that want a panel.
+    #[cfg(target_os = "ios")]
+    pub fn top_scene_name(&self) -> Option<&str> {
+        self.scenes.top_scene_name()
+    }
+
     /// Keeps the egui host's screen size in sync after a rotation or resize.
     /// `width`/`height` are logical points.
     #[cfg(target_os = "ios")]

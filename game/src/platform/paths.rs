@@ -82,6 +82,9 @@ pub fn bootstrap_game_dir() -> anyhow::Result<()> {
     if !songs.exists() {
         let _ = std::fs::create_dir_all(&songs);
     }
+    // The folder is logged because charts are added by hand through Files.app
+    // as well, and the sandbox path is not something a player can guess.
+    log::info!("Charts folder: {}", songs.display());
 
     Ok(())
 }

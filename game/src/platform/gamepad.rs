@@ -165,7 +165,7 @@ impl BindingKind {
 /// That map is keyed by a controller UUID; iOS has no `gilrs` so the bridge
 /// synthesises a fixed one. Keeping the bindings in the normal config means
 /// they are written by every `config.save()` and reloaded on the next launch.
-const IOS_BINDINGS_UUID: uuid::Uuid = uuid::Uuid::from_u128(0x6b73_6f6e_5f69_6f73_5f62_696e_6402);
+const IOS_BINDINGS_UUID: uuid::Uuid = uuid::Uuid::from_u128(0x6b73_6f6e_5f69_6f73_5f62_696e_6403);
 
 /// Copies the persisted bindings into the in-memory map. Called once at
 /// startup, right after the config is loaded.
@@ -225,7 +225,10 @@ pub fn load_bindings() {
     if let Ok(mut map) = bindings().lock() {
         *map = candidate;
     }
-    log::info!("Loaded {count} iOS gamepad bindings");
+    // The knob axes are logged because "the knob turns the wrong laser" is
+    // almost always a wrong axis binding, and this is the one line that says
+    // which axis each knob ended up on.
+    log::info!("Loaded {count} iOS gamepad bindings (left knob axis {left:?}, right knob axis {right:?})");
 }
 
 /// Writes the in-memory bindings back into the config. The caller is expected
@@ -373,6 +376,25 @@ pub fn bind_button(button: UscButton, index: i32) {
 /// Binds a laser knob to a physical stick axis. See [`bind_button`].
 pub fn bind_axis(button: UscButton, index: i32) {
     if let Ok(mut bindings) = bindings().lock() {
+        // Two knobs on one axis turn both lasers with one knob, which is never
+        // what the player asked for; the binding just made wins and the other
+        // knob falls back to its default axis.
+        if let UscButton::Laser(side, _) = button {
+            let other = match side {
+                Side::Left => Side::Right,
+                Side::Right => Side::Left,
+            };
+            for direction in [Side::Left, Side::Right] {
+                let key = UscButton::Laser(other, direction);
+                let shares_axis = bindings
+                    .get(&key)
+                    .is_some_and(|b| b.kind == BindingKind::Axis && b.index == index);
+                if shares_axis {
+                    bindings.remove(&key);
+                    log::info!("Cleared the other knob's binding to axis {index}");
+                }
+            }
+        }
         bindings.insert(
             button,
             BindingRef {
@@ -489,6 +511,13 @@ pub fn push_button(raw_button: i32, pressed: bool) {
 /// axis position in -1.0..=1.0.
 pub fn push_axis(knob: i32, value: f32) {
     let side = if knob == 0 { Side::Left } else { Side::Right };
+    // The raw reports are logged for the first moments of a session: a knob
+    // that moves the wrong laser can then be told apart from a stick that
+    // reports two axes at once.
+    static PUSHES: AtomicUsize = AtomicUsize::new(0);
+    if PUSHES.fetch_add(1, Ordering::Relaxed) < 150 {
+        log::info!("gamepad axis knob={knob} value={value:.4}");
+    }
     if let Ok(mut q) = queue().lock() {
         q.push_back(GamepadEvent::Axis(side, value, now()));
     }
@@ -574,7 +603,8 @@ pub fn drain(knob_state: &mut LaserState) -> Vec<UscInputEvent> {
                 // report can be told apart from a wrong binding.
                 static AXIS_LOG: AtomicUsize = AtomicUsize::new(0);
                 if AXIS_LOG.fetch_add(1, Ordering::Relaxed) < 40 {
-                    log::info!("knob {side:?} axis={value:.4} step={step:.4}");
+                    let other = last[1 - index].unwrap_or(f32::NAN);
+                    log::info!("knob {side:?} axis={value:.4} step={step:.4} other={other:.4}");
                 }
                 if step.abs() < AXIS_STEP_DEADZONE {
                     continue;

@@ -2366,6 +2366,13 @@ impl Scene for Game {
                 }
 
                 if delta.abs() > 0.0 {
+                    // Logged so "one knob turns both lasers" can be traced to
+                    // the side the input actually arrived on.
+                    static LASER_LOG: std::sync::atomic::AtomicUsize =
+                        std::sync::atomic::AtomicUsize::new(0);
+                    if LASER_LOG.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 40 {
+                        log::info!("laser input side={side:?} delta={delta:.4}");
+                    }
                     self.laser_buffer[index].push_back((*timestamp, delta));
                 }
             }

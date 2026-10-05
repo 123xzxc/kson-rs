@@ -276,6 +276,15 @@ impl Scenes {
         self.active.last().is_some_and(|t| t.touch_as_mouse())
     }
 
+    /// The name of the scene on top.
+    ///
+    /// iOS uses it to decide whether the on-screen controller belongs on the
+    /// current screen: the title screen is driven by taps, and the panel would
+    /// cover the menu.
+    pub fn top_scene_name(&self) -> Option<&str> {
+        self.active.last().map(|scene| scene.name())
+    }
+
     /// True when the top scene is a mouse-driven menu (title, song select,
     /// settings). iOS turns a drag there into a knob turn so the wheels can be
     /// scrolled with a swipe; gameplay keeps the raw touch, where a drag is a

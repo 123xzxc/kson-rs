@@ -203,6 +203,13 @@ pub struct DownloadScreen {
     exit_requested: bool,
     suspended: bool,
     should_suspend: bool,
+    /// The last cursor position seen, in render pixels.
+    ///
+    /// The script hit tests a tap against the grid it draws, and the shared
+    /// `game.GetMousePos()` is only refreshed when the frame renders, which is
+    /// after a press is delivered; the position is handed to the script instead
+    /// so a tap always selects the entry under the finger.
+    cursor: (f64, f64),
 }
 impl DownloadScreen {
     pub fn new(service_provider: ServiceProvider) -> Self {
@@ -238,6 +245,7 @@ impl DownloadScreen {
             exit_requested: false,
             suspended: false,
             should_suspend: false,
+            cursor: (0.0, 0.0),
         }
     }
     /// Spawns the worker that downloads and unpacks the archive for one
@@ -294,11 +302,27 @@ impl DownloadScreen {
         }
         if self.archive_done.is_none() {
             if let Ok(request) = self.archive_rx.try_recv() {
-                info!("Downloading chart archive for {}", request.song_id);
+                // The destination is logged so the player can find the charts
+                // afterwards: they land in the same folder the song provider
+                // reads, which is also where charts are added by hand.
+                info!(
+                    "Downloading chart archive for {} into {}",
+                    request.song_id,
+                    self.songs_path().display()
+                );
                 self.archive_done = Some(self.start_download(request));
             }
         }
         Ok(())
+    }
+    /// The folder charts are unpacked into, resolved the same way the song
+    /// provider resolves it.
+    fn songs_path(&self) -> PathBuf {
+        let mut songs_path = GameConfig::get().songs_path.clone();
+        if !songs_path.is_absolute() {
+            songs_path = GameConfig::get().game_folder.join(songs_path);
+        }
+        songs_path
     }
     fn refresh_song_providers(&self) {
         let files = self
@@ -392,7 +416,45 @@ impl Scene for DownloadScreen {
         render.call::<()>(dt / 1000.0)?;
         Ok(())
     }
-    fn on_event(&mut self, _event: &winit::event::Event<UscInputEvent>) {}
+    /// Forwards mouse presses to the script, exactly like the title screen.
+    ///
+    /// iOS turns a touch into a synthetic mouse press, and the download screen
+    /// has no keyboard for the hotkeys, so a tap is the only way to pick a song
+    /// without the on-screen panel.
+    fn on_event(&mut self, event: &winit::event::Event<UscInputEvent>) {
+        use winit::event::{Event, WindowEvent};
+        let code = match event {
+            Event::WindowEvent {
+                event: WindowEvent::CursorMoved { position, .. },
+                ..
+            } => {
+                self.cursor = (position.x, position.y);
+                return;
+            }
+            Event::WindowEvent {
+                event:
+                    WindowEvent::MouseInput {
+                        state: winit::event::ElementState::Pressed,
+                        button,
+                        ..
+                    },
+                ..
+            } => match button {
+                winit::event::MouseButton::Left => 0,
+                winit::event::MouseButton::Right => 2,
+                winit::event::MouseButton::Middle => 1,
+                winit::event::MouseButton::Forward => 3,
+                winit::event::MouseButton::Back => 4,
+                winit::event::MouseButton::Other(b) => *b,
+            },
+            _ => return,
+        };
+        if let Ok(mouse_pressed) = self.lua.globals().get::<Function>("mouse_pressed") {
+            if let Err(e) = mouse_pressed.call::<()>((code, self.cursor.0, self.cursor.1)) {
+                log::error!("{e}");
+            }
+        }
+    }
     fn on_button_pressed(&mut self, button: UscButton, _timestamp: SystemTime) {
         if let Ok(button_pressed) = self.lua.globals().get::<Function>("button_pressed") {
             if let Some(e) = button_pressed.call::<()>(Into::<u8>::into(button)).err() {
