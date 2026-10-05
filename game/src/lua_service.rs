@@ -68,6 +68,27 @@ impl LuaProvider {
         set_global_env(InternetRankingLua, "IRData", &lua)?;
         set_global_env(InternetRankingLua, "IR", &lua)?;
 
+        // `print` normally writes to stdout, which the iOS sandbox does not
+        // expose, so route it to the file log. A skin can then leave tracing
+        // in place and have it show up in `ios.log`.
+        lua.globals().set(
+            "print",
+            lua.create_function(|_, args: mlua::Variadic<mlua::Value>| {
+                let parts: Vec<String> = args
+                    .iter()
+                    .map(|value| match value {
+                        mlua::Value::String(s) => s.to_string_lossy(),
+                        mlua::Value::Integer(i) => i.to_string(),
+                        mlua::Value::Number(n) => n.to_string(),
+                        mlua::Value::Boolean(b) => b.to_string(),
+                        other => format!("{other:?}"),
+                    })
+                    .collect();
+                log::info!("[lua] {}", parts.join("\t"));
+                Ok(())
+            })?,
+        )?;
+
         arena
             .write()
             .expect("Could not get lock to lua arena")

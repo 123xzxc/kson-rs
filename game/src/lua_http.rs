@@ -124,9 +124,11 @@ impl LuaHttp {
                     if let Some(key) = callbacks.remove(&data.id) {
                         if let Ok(callback) = lua.registry_value::<Function>(&key) {
                             if let Ok(value) = lua.to_value(&data) {
+                                log::info!("LuaHttp::poll invoking callback id={}", data.id);
                                 if let Err(e) = callback.call::<()>(value) {
                                     log::error!("Http callback id={} failed: {e}", data.id);
                                 }
+                                log::info!("LuaHttp::poll callback id={} returned", data.id);
                             }
                         }
                     } else {

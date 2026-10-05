@@ -1475,8 +1475,19 @@ impl VgfxLua {
         w: Option<u32>,
         h: Option<u32>,
     ) -> mlua::Result<u32> {
+        // Rate-limited trace: without it a crash inside this path cannot be
+        // told apart from one in the drawing code that calls it.
+        fn trace_job(stage: &str, url: &str) {
+            static STEPS: std::sync::atomic::AtomicUsize =
+                std::sync::atomic::AtomicUsize::new(0);
+            if STEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 60 {
+                log::info!("LoadWebImageJob {stage} {url}");
+            }
+        }
+        trace_job("enter", &url);
         let mut _vgfx_lock = _vgfx.write().expect("Lock error");
         let _vgfx = _vgfx_lock.deref_mut();
+        trace_job("locked", &url);
         if let Some((key, job)) = _vgfx.web_image_jobs.remove_entry(&url) {
             match job.try_take() {
                 Ok(img) if img.width() > 0 => {
@@ -1518,13 +1529,19 @@ impl VgfxLua {
                 .web_image_jobs
                 .entry(url.clone())
                 .or_insert_with(move || {
-                    Promise::spawn_thread("load web image", move || {
-                        let result = reqwest::blocking::get(&key)
-                            .and_then(|r| r.bytes())
-                            .map_err(|e| anyhow!("{e}"))
-                            .and_then(|b| {
-                                image::load_from_memory(&b).map_err(|e| anyhow!("{e}"))
-                            });
+                    // Fetch on the shared async runtime, the same way the song
+                    // provider does. `reqwest::blocking` builds a private tokio
+                    // runtime per request inside a fresh thread, and doing that
+                    // for a page of jackets took the app down on iPadOS.
+                    Promise::spawn_async(async move {
+                        let result = async {
+                            let response = reqwest::get(&key)
+                                .await
+                                .map_err(|e| anyhow!("{e}"))?;
+                            let bytes = response.bytes().await.map_err(|e| anyhow!("{e}"))?;
+                            image::load_from_memory(&bytes).map_err(|e| anyhow!("{e}"))
+                        }
+                        .await;
                         match result {
                             Ok(img) => {
                                 if let (Some(w), Some(h)) = (w, h) {
@@ -1548,6 +1565,7 @@ impl VgfxLua {
                 .insert(url.clone(), placeholder);
         }
 
+        trace_job("returning", &url);
         Ok(*_vgfx.scoped_assets[&lua_key.key()]
             .job_imgs
             .get(&url)

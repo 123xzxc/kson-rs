@@ -41,11 +41,11 @@ local sortingOptions = {"Uploaded", "Oldest"}
 local needsReload = false
 
 function addsong(song)
-    if song.jacket_url ~= nil then
-        song.jacket = gfx.LoadWebImageJob(song.jacket_url, jacketFallback, 250, 250)
-    else
-        song.jacket = jacketFallback
-    end
+    -- Jacket art is fetched from `render_song` instead: asking for a whole
+    -- page of jackets inside the HTTP callback killed the app, and one request
+    -- per visible entry keeps the work on the render path.
+    print("addsong", tostring(song.id))
+    song.jacket = jacketFallback
     if downloaded[song.id] then
         song.status = "Downloaded"
     end
@@ -78,6 +78,7 @@ end
 
 
 function gotSongsCallback(response)
+    print("gotSongs status", response.status, "bytes", #response.text)
     if response.status ~= 200 then 
         -- Never leave the screen on LOADING forever: surface the failure and
         -- let the render loop retry.
@@ -90,10 +91,12 @@ function gotSongsCallback(response)
     end
     local ok, jsondata = pcall(json.decode, response.text)
     if not ok or type(jsondata) ~= "table" or type(jsondata.data) ~= "table" then
+        print("gotSongs decode failed", tostring(jsondata))
         loadError = "Nautica returned an unexpected response"
         loading = false
         return
     end
+    print("gotSongs decoded", #jsondata.data)
     for i,song in ipairs(jsondata.data) do
         addsong(song)
     end
@@ -101,6 +104,7 @@ function gotSongsCallback(response)
     loadError = nil
     retryDelay = 0
     loading = false
+    print("gotSongs done", #songs)
 end
 
 Http.GetAsync(nextUrl, header, gotSongsCallback)
