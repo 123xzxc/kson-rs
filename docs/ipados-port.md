@@ -349,7 +349,8 @@ userdata`，Start 和双击都不下载。
 改动：
 
 * `app.rs` 的 `set_auto_hidden` 扩展到 `"Get Songs"`。
-* 皮肤 `downloadscreen.lua` 自己画一个右上角 **Back** 按钮（`RoundedRect` + 文字），
+* 皮肤 `downloadscreen.lua` 自己画一个左上角 **Back** 按钮（`RoundedRect` + 文字；
+  必须画在 `draw_search` 之后，搜索条会覆盖整条顶边），
   命中后走 `exit_screen()`（存 `nautica.json` 再 `dlScreen.Exit()`），
   手柄的 `BUTTON_BCK` 复用同一个函数。
 * `DownloadScreen::on_event` 现在**把按压押后到抬手**再交给脚本：

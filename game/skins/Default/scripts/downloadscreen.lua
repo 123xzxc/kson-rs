@@ -262,7 +262,9 @@ local backButtonW = 240
 local backButtonH = 100
 
 function back_button_rect()
-    return resX - backButtonW - 20, 20, backButtonW, backButtonH
+    -- Top left: the search bar and the Nautica credit own the other corners,
+    -- and the pad's hide/show button does not exist on this screen.
+    return 20, 20, backButtonW, backButtonH
 end
 
 function back_button_pressed(mx, my)
@@ -337,7 +339,6 @@ function render(deltaTime)
     render_hotkeys()
     render_loading()
     render_info()
-    render_back_button()
 
     local fifthX = resX/5
     local fifthY = resY/5
@@ -346,6 +347,8 @@ function render(deltaTime)
     --draw text search
     soffset = soffset * 0.8
     draw_search(fifthX*2,10, fifthX*3 + 30, fifthY/4)
+    -- Drawn last: the search bar is painted over the whole top of the screen.
+    render_back_button()
 end
 
 function archive_callback(entries, id)
