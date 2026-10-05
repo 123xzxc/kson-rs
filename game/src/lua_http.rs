@@ -28,9 +28,12 @@ struct Response {
 }
 
 impl Response {
-    pub fn error(error: String) -> Self {
+    /// A failed request. The `id` matters: `LuaHttp::poll` dispatches the
+    /// callback by id, so a failure that forgot it would leave the Lua caller
+    /// waiting forever (this is what made "Get Songs" hang on LOADING).
+    pub fn error(id: i64, error: String) -> Self {
         Self {
-            id: 0,
+            id,
             url: String::new(),
             text: String::new(),
             status: -1,
@@ -100,13 +103,34 @@ impl LuaHttp {
         };
 
         let mut remaining_calls = vec![];
+        // A request that never resolves keeps the Lua caller on its loading
+        // screen; report it periodically so a hang can be told apart from a
+        // slow network.
+        if !calls.is_empty() {
+            static PENDING_POLLS: std::sync::atomic::AtomicUsize =
+                std::sync::atomic::AtomicUsize::new(0);
+            if PENDING_POLLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 300 == 0 {
+                log::info!("LuaHttp::poll: {} request(s) still pending", calls.len());
+            }
+        }
         for ele in calls.drain(..) {
             match ele.try_take() {
                 Ok(data) => {
+                    log::info!(
+                        "LuaHttp::poll resolved id={} status={}",
+                        data.id,
+                        data.status
+                    );
                     if let Some(key) = callbacks.remove(&data.id) {
                         if let Ok(callback) = lua.registry_value::<Function>(&key) {
-                            _ = callback.call::<()>(lua.to_value(&data).unwrap());
+                            if let Ok(value) = lua.to_value(&data) {
+                                if let Err(e) = callback.call::<()>(value) {
+                                    log::error!("Http callback id={} failed: {e}", data.id);
+                                }
+                            }
                         }
+                    } else {
+                        log::warn!("LuaHttp::poll: no callback registered for id={}", data.id);
                     }
                 }
                 Err(call) => remaining_calls.push(call),
@@ -187,6 +211,7 @@ impl UserData for ExportLuaHttp {
 
                     http.calls
                         .push(poll_promise::Promise::spawn_async(async move {
+                            log::info!("Http.GetAsync id={id} url={url}");
                             let client = match reqwest::Client::builder()
                                 .default_headers(HeaderMap::from_iter(headers.iter().filter_map(
                                     |(name, value)| {
@@ -216,14 +241,22 @@ impl UserData for ExportLuaHttp {
                             {
                                 Ok(v) => v,
                                 Err(e) => {
-                                    return Response::error(format!("{e}"));
+                                    log::warn!("Http.GetAsync id={id} client build failed: {e}");
+                                    return Response::error(id, format!("{e}"));
                                 }
                             };
 
-                            let req = match client.get(url).build() {
+                            // A request that never completes would leave the
+                            // Lua caller waiting forever, so bound it.
+                            let req = match client
+                                .get(url)
+                                .timeout(std::time::Duration::from_secs(25))
+                                .build()
+                            {
                                 Ok(v) => v,
                                 Err(e) => {
-                                    return Response::error(format!("{e}"));
+                                    log::warn!("Http.GetAsync id={id} request build failed: {e}");
+                                    return Response::error(id, format!("{e}"));
                                 }
                             };
 
@@ -231,13 +264,23 @@ impl UserData for ExportLuaHttp {
                                 Ok(r) => {
                                     let mut r = r.await;
                                     r.id = id;
+                                    log::info!(
+                                        "Http.GetAsync id={id} status={} bytes={}",
+                                        r.status,
+                                        r.text.len()
+                                    );
                                     r
                                 }
-                                Err(e) => Response::error(format!("{:?}", e)),
+                                Err(e) => {
+                                    log::warn!("Http.GetAsync id={id} failed: {e:?}");
+                                    Response::error(id, format!("{:?}", e))
+                                }
                             }
                         }));
 
                     http.next_id += 1;
+                } else {
+                    log::error!("Http.GetAsync: LuaHttp app data is not registered");
                 }
                 Ok(())
             },
@@ -283,14 +326,21 @@ impl UserData for ExportLuaHttp {
                             {
                                 Ok(v) => v,
                                 Err(e) => {
-                                    return Response::error(e.to_string());
+                                    log::warn!("Http.PostAsync id={id} client build failed: {e}");
+                                    return Response::error(id, e.to_string());
                                 }
                             };
 
-                            let request = match client.post(url).body(content).build() {
+                            let request = match client
+                                .post(url)
+                                .body(content)
+                                .timeout(std::time::Duration::from_secs(25))
+                                .build()
+                            {
                                 Ok(v) => v,
                                 Err(e) => {
-                                    return Response::error(e.to_string());
+                                    log::warn!("Http.PostAsync id={id} request build failed: {e}");
+                                    return Response::error(id, e.to_string());
                                 }
                             };
 
@@ -298,9 +348,17 @@ impl UserData for ExportLuaHttp {
                                 Ok(r) => {
                                     let mut r = r.await;
                                     r.id = id;
+                                    log::info!(
+                                        "Http.PostAsync id={id} status={} bytes={}",
+                                        r.status,
+                                        r.text.len()
+                                    );
                                     r
                                 }
-                                Err(e) => Response::error(format!("{:?}", e)),
+                                Err(e) => {
+                                    log::warn!("Http.PostAsync id={id} failed: {e:?}");
+                                    Response::error(id, format!("{:?}", e))
+                                }
                             }
                         }));
 

@@ -274,7 +274,7 @@ impl Scene for SettingsScreen {
                 #[cfg(any(target_os = "android", target_os = "ios"))]
                 ui.add_space(50.0);
 
-                settings_section("Input", ui, |ui| {
+                settings_section_open("Input", ui, |ui| {
                     ui.label("Offset");
                     ui.add(Slider::new(
                         &mut self.altered_settings.global_offset,
@@ -300,6 +300,21 @@ impl Scene for SettingsScreen {
 
                     ui.checkbox(&mut self.altered_settings.mouse_knobs, "Mouse knobs");
                     ui.end_row();
+
+                    // The physical arcade knob reports a wrapped axis; this
+                    // scales how far each encoder step turns the laser.
+                    #[cfg(target_os = "ios")]
+                    {
+                        ui.label("Knob sensitivity");
+                        ui.add(
+                            Slider::new(
+                                &mut self.altered_settings.knob_sensitivity,
+                                0.05..=3.0,
+                            )
+                            .fixed_decimals(2),
+                        );
+                        ui.end_row();
+                    }
 
                     #[cfg(not(target_os = "ios"))]
                     if true {
@@ -984,4 +999,18 @@ fn settings_section<T>(
     ui.collapsing(RichText::new(name).heading(), |ui| {
         ui.horizontal_wrapped(add_contents)
     })
+}
+
+/// Like [`settings_section`] but expanded on first open.
+///
+/// The controller and knob settings live here, and they are the reason the
+/// options screen is opened on a tablet at all.
+fn settings_section_open<T>(
+    name: &str,
+    ui: &mut Ui,
+    add_contents: impl FnOnce(&mut Ui) -> T,
+) -> CollapsingResponse<InnerResponse<T>> {
+    egui::CollapsingHeader::new(RichText::new(name).heading())
+        .default_open(true)
+        .show(ui, |ui| ui.horizontal_wrapped(add_contents))
 }

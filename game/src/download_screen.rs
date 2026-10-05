@@ -21,7 +21,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{channel, Receiver, Sender},
         Arc,
     },
@@ -381,6 +381,13 @@ impl Scene for DownloadScreen {
         Ok(())
     }
     fn render_ui(&mut self, dt: f64) -> Result<()> {
+        // A frame counter proves the render loop is still alive while the
+        // script waits for its first HTTP reply.
+        static FRAMES: AtomicUsize = AtomicUsize::new(0);
+        let frame = FRAMES.fetch_add(1, Ordering::Relaxed);
+        if frame < 3 || frame % 600 == 0 {
+            info!("Get Songs render frame {frame}");
+        }
         let render: Function = self.lua.globals().get("render")?;
         render.call::<()>(dt / 1000.0)?;
         Ok(())

@@ -18,6 +18,8 @@ local displayCursorPosY = 0
 local nextUrl = "https://ksm.dev/app/songs"
 local screenState = 0 --0 = normal, 1 = level, 2 = sorting
 local loading = true
+local loadError = nil
+local retryDelay = 0
 local downloaded = {}
 local songs = {}
 local filters = {}
@@ -77,14 +79,27 @@ end
 
 function gotSongsCallback(response)
     if response.status ~= 200 then 
-        error() 
+        -- Never leave the screen on LOADING forever: surface the failure and
+        -- let the render loop retry.
+        loadError = string.format("Nautica request failed (status %s)", tostring(response.status))
+        if response.error and response.error ~= "" then
+            loadError = loadError .. ": " .. response.error
+        end
+        loading = false
         return 
     end
-    local jsondata = json.decode(response.text)
+    local ok, jsondata = pcall(json.decode, response.text)
+    if not ok or type(jsondata) ~= "table" or type(jsondata.data) ~= "table" then
+        loadError = "Nautica returned an unexpected response"
+        loading = false
+        return
+    end
     for i,song in ipairs(jsondata.data) do
         addsong(song)
     end
-    nextUrl = jsondata.links.next
+    if jsondata.links then nextUrl = jsondata.links.next else nextUrl = nil end
+    loadError = nil
+    retryDelay = 0
     loading = false
 end
 
@@ -168,6 +183,16 @@ function render_cursor()
 end
 
 function render_loading()
+    if loadError then
+        gfx.Save()
+        gfx.ResetTransform()
+        gfx.FillColor(255,96,96)
+        gfx.TextAlign(gfx.TEXT_ALIGN_CENTER + gfx.TEXT_ALIGN_MIDDLE)
+        gfx.FontSize(40)
+        gfx.Text(loadError, resX/2, resY/2)
+        gfx.Restore()
+        return
+    end
     if not loading then return end
     gfx.Save()
     gfx.ResetTransform()
@@ -224,6 +249,17 @@ function render_info()
 end
 
 function render(deltaTime)
+    if loadError then
+        retryDelay = retryDelay + deltaTime
+        if retryDelay > 5 then
+            retryDelay = 0
+            loadError = nil
+            loading = true
+            songs = {}
+            nextUrl = "https://ksm.dev/app/songs"
+            Http.GetAsync(nextUrl, header, gotSongsCallback)
+        end
+    end
     gfx.BeginPath()
     gfx.ImageRect(0, 0, resX, resY, backgroundImage, 1, 0);
     gfx.LoadSkinFont("NotoSans-Regular.ttf");

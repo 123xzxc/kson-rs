@@ -12,6 +12,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
 use crate::button_codes::{LaserState, UscButton, UscInputEvent};
+use crate::config::GameConfig;
 use kson::Side;
 use winit::event::ElementState;
 
@@ -527,11 +528,13 @@ fn wrapped_step(delta: f32) -> f32 {
 /// 0..511 position by 10), so this only rejects noise.
 const AXIS_STEP_DEADZONE: f32 = 0.01;
 
-/// How far a step of the axis turns the knob.
+/// Fallback for how far a step of the axis turns the knob.
 ///
 /// One encoder detent moves the axis by about 0.078, and the laser wants a
-/// modest nudge per detent so a small correction stays controllable.
-const KNOB_AXIS_TO_LASER: f32 = 1.5;
+/// modest nudge per detent so a small correction stays controllable. The
+/// setting in the options screen overrides this; the fallback only covers the
+/// window before the config is loaded.
+const KNOB_AXIS_TO_LASER: f32 = 0.5;
 
 /// Which way the axis turns the laser.
 ///
@@ -547,6 +550,9 @@ pub fn drain(knob_state: &mut LaserState) -> Vec<UscInputEvent> {
     let Ok(mut q) = queue().lock() else {
         return Vec::new();
     };
+    // Read the user's knob sensitivity once per drain instead of per event.
+    // `GameConfig` has its own lock, so this cannot deadlock against the queue.
+    let knob_scale = GameConfig::get().knob_sensitivity;
     let mut out = Vec::with_capacity(q.len());
     while let Some(event) = q.pop_front() {
         match event {
@@ -578,7 +584,12 @@ pub fn drain(knob_state: &mut LaserState) -> Vec<UscInputEvent> {
                 // never cleared elsewhere, so without the reset the delta would
                 // grow every frame until the laser sat pinned at one end.
                 knob_state.zero_deltas();
-                knob_state.update_delta(side, step * KNOB_AXIS_TO_LASER * KNOB_AXIS_SIGN);
+                let scale = if knob_scale > 0.0 {
+                    knob_scale
+                } else {
+                    KNOB_AXIS_TO_LASER
+                };
+                knob_state.update_delta(side, step * scale * KNOB_AXIS_SIGN);
                 out.push(UscInputEvent::Laser(*knob_state, time));
             }
         }

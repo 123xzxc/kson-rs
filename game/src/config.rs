@@ -89,6 +89,8 @@ pub struct GameConfig {
     pub mappings: Vec<String>,
     pub mouse_knobs: bool,
     pub mouse_ppr: f64,
+    /// How far one step of a physical knob's axis turns the laser.
+    pub knob_sensitivity: f32,
     pub mod_speed: f64,
     pub keyboard_buttons: bool,
     pub keyboard_knobs: bool,
@@ -346,6 +348,7 @@ impl Default for GameConfig {
             ],
             mouse_knobs: false,
             mouse_ppr: 256.0,
+            knob_sensitivity: 0.5,
             keyboard_buttons: false,
             keybinds: vec![Keybinds::default()],
             keyboard_knobs: false,
