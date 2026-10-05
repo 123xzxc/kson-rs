@@ -83,8 +83,29 @@ pub fn bootstrap_game_dir() -> anyhow::Result<()> {
         let _ = std::fs::create_dir_all(&songs);
     }
     // The folder is logged because charts are added by hand through Files.app
-    // as well, and the sandbox path is not something a player can guess.
-    log::info!("Charts folder: {}", songs.display());
+    // as well, and the sandbox path is not something a player can guess. The
+    // entry count tells "charts are in the wrong folder" apart from "the
+    // importer cannot read the folder".
+    let entries = std::fs::read_dir(&songs)
+        .map(|dir| dir.filter_map(Result::ok).count())
+        .unwrap_or(0);
+    log::info!("Charts folder: {} ({entries} entries)", songs.display());
+
+    // A marker so the folder can be found in Files.app: the container path is
+    // several UUIDs deep and nothing in the UI names it.
+    let marker = songs.join("PUT_CHARTS_HERE.txt");
+    if !marker.exists() {
+        let _ = std::fs::write(
+            &marker,
+            "Charts go in this folder.\n\n\
+             The game scans this folder and every sub-folder for .ksh and .kson \
+             files, and treats each folder that contains one as a song. Keep a \
+             chart together with its audio and jacket image, the way the Get \
+             Songs screen unpacks them.\n\n\
+             This file is only a marker so the folder is easy to find; it can be \
+             deleted.\n",
+        );
+    }
 
     Ok(())
 }

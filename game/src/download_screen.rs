@@ -33,13 +33,13 @@ use kson::Side;
 use kson_rodio_sources::owned_source::{owned_source, Marker};
 use rodio::Source;
 use log::{info, warn};
-use mlua::{Function, Lua, LuaSerdeExt, UserData, UserDataMethods};
+use mlua::{Function, Lua, LuaSerdeExt};
 use crate::{
     button_codes::{LaserState, UscButton, UscInputEvent},
     companion_interface::GameState,
     config::GameConfig,
     lua_http::LuaHttp,
-    lua_service::{set_global_env, LuaProvider},
+    lua_service::LuaProvider,
     scene::Scene,
     song_provider::{NauticaSongProvider, SongProvider},
     util::Warn,
@@ -71,78 +71,103 @@ struct DlScreenLua {
     /// out and stops it, so `StopPreview` needs no handle bookkeeping.
     preview_stop: Arc<AtomicBool>,
 }
-impl DlScreenLua {
-    fn stop_preview(&self) {
-        self.preview_stop.store(true, Ordering::SeqCst);
+/// Builds the `dlScreen` global.
+///
+/// The skin calls these as plain table functions (`dlScreen.Exit()`), the same
+/// way it calls `Http.GetAsync`, so the state each one needs is captured in the
+/// closure instead of being read back off a Lua userdata. A userdata with
+/// `add_function` bindings required `dlScreen:Exit()`, and the mismatched call
+/// style is what made `DownloadArchive` and `PlayPreview` fail with "error
+/// converting Lua string to userdata".
+fn register_dl_screen(lua: &Lua, location: DlScreenLua) -> mlua::Result<()> {
+    let DlScreenLua {
+        exit_tx,
+        archive_tx,
+        songs_path,
+        preview_dir,
+        mixer,
+        sample_owner,
+        preview_stop,
+    } = location;
+
+    let table = lua.create_table()?;
+
+    {
+        let exit_tx = exit_tx.clone();
+        let stop = preview_stop.clone();
+        table.set(
+            "Exit",
+            lua.create_function(move |_, ()| {
+                let _ = exit_tx.send(());
+                stop.store(true, Ordering::SeqCst);
+                Ok(())
+            })?,
+        )?;
     }
-}
-impl UserData for DlScreenLua {
-    fn add_methods<T: UserDataMethods<Self>>(methods: &mut T) {
-        methods.add_function("Exit", |_, this: mlua::AnyUserData| {
-            let data = this.borrow::<Self>()?;
-            let _ = data.exit_tx.send(());
-            data.stop_preview();
-            Ok(())
-        });
-        methods.add_function("HttpSupported", |_, _: mlua::Variadic<mlua::Value>| Ok(true));
-        methods.add_function("GetSongsPath", |_, this: mlua::AnyUserData| {
-            let data = this.borrow::<Self>()?;
-            Ok(data.songs_path.to_string_lossy().to_string())
-        });
-        methods.add_function(
+    table.set(
+        "HttpSupported",
+        lua.create_function(|_, _: mlua::Variadic<mlua::Value>| Ok(true))?,
+    )?;
+    {
+        let songs_path = songs_path.clone();
+        table.set(
+            "GetSongsPath",
+            lua.create_function(move |_, ()| Ok(songs_path.to_string_lossy().to_string()))?,
+        )?;
+    }
+    {
+        let archive_tx = archive_tx.clone();
+        table.set(
             "DownloadArchive",
-            |lua,
-             (this, url, _header, id, callback): (
-                mlua::AnyUserData,
-                String,
-                Option<mlua::Table>,
-                String,
-                Function,
-            )| {
-                let archive_tx = this.borrow::<Self>()?.archive_tx.clone();
-                let _ = archive_tx.send(ArchiveRequest {
-                    url,
-                    song_id: id,
-                    callback: lua.create_registry_value(callback)?,
-                });
-                Ok(())
-            },
-        );
-        methods.add_function(
-            "PlayPreview",
-            |_lua,
-             (this, url, _header, id): (
-                mlua::AnyUserData,
-                String,
-                Option<mlua::Table>,
-                String,
-            )| {
-                let (preview_dir, mixer, sample_owner) = {
-                    let data = this.borrow::<Self>()?;
-                    (
-                        data.preview_dir.clone(),
-                        data.mixer.clone(),
-                        data.sample_owner.clone(),
-                    )
-                };
-                let stop = {
-                    let data = this.borrow::<Self>()?;
-                    data.preview_stop.store(false, Ordering::SeqCst);
-                    data.preview_stop.clone()
-                };
-                if let Err(e) =
-                    play_preview(&url, &id, &preview_dir, &mixer, &sample_owner, stop)
-                {
-                    warn!("Failed to play preview {id}: {e:#}");
-                }
-                Ok(())
-            },
-        );
-        methods.add_function("StopPreview", |_, this: mlua::AnyUserData| {
-            this.borrow::<Self>()?.stop_preview();
-            Ok(())
-        });
+            lua.create_function(
+                move |lua,
+                      (url, _header, id, callback): (
+                    String,
+                    Option<mlua::Table>,
+                    String,
+                    Function,
+                )| {
+                    let _ = archive_tx.send(ArchiveRequest {
+                        url,
+                        song_id: id,
+                        callback: lua.create_registry_value(callback)?,
+                    });
+                    Ok(())
+                },
+            )?,
+        )?;
     }
+    {
+        let stop = preview_stop.clone();
+        table.set(
+            "StopPreview",
+            lua.create_function(move |_, ()| {
+                stop.store(true, Ordering::SeqCst);
+                Ok(())
+            })?,
+        )?;
+    }
+    {
+        let stop = preview_stop;
+        table.set(
+            "PlayPreview",
+            lua.create_function(
+                move |_, (url, _header, id): (String, Option<mlua::Table>, String)| {
+                    // A new preview replaces the old one: clearing the flag
+                    // lets the previous source fade out instead of being cut.
+                    stop.store(false, Ordering::SeqCst);
+                    if let Err(e) =
+                        play_preview(&url, &id, &preview_dir, &mixer, &sample_owner, stop.clone())
+                    {
+                        warn!("Failed to play preview {id}: {e:#}");
+                    }
+                    Ok(())
+                },
+            )?,
+        )?;
+    }
+
+    lua.globals().set("dlScreen", table)
 }
 /// Downloads `url` and plays it through the mixer, caching it under
 /// `preview/<id>.<ext>` like upstream USC does.
@@ -210,7 +235,20 @@ pub struct DownloadScreen {
     /// after a press is delivered; the position is handed to the script instead
     /// so a tap always selects the entry under the finger.
     cursor: (f64, f64),
+    /// Whole entries the left knob has turned but not applied yet.
+    ///
+    /// The knob reports an angle, so the movement is accumulated and spent one
+    /// entry at a time instead of being handed to the script as a fraction.
+    knob_progress: f32,
 }
+
+/// How far one encoder detent moves the knob axis, matching the gamepad
+/// bridge's own step maths.
+const KNOB_AXIS_PER_DETENT: f32 = 0.078;
+
+/// How many detents move the Get Songs selection by one entry.
+const KNOB_DETENTS_PER_STEP: f32 = 3.0;
+
 impl DownloadScreen {
     pub fn new(service_provider: ServiceProvider) -> Self {
         let lua = LuaProvider::new_lua();
@@ -232,7 +270,7 @@ impl DownloadScreen {
             sample_owner: Marker::new(),
             preview_stop: Arc::new(AtomicBool::new(false)),
         };
-        if let Err(e) = set_global_env(location, "dlScreen", &lua) {
+        if let Err(e) = register_dl_screen(&lua, location) {
             warn!("Could not create dlScreen bindings: {e}");
         }
         Self {
@@ -246,6 +284,7 @@ impl DownloadScreen {
             suspended: false,
             should_suspend: false,
             cursor: (0.0, 0.0),
+            knob_progress: 0.0,
         }
     }
     /// Spawns the worker that downloads and unpacks the archive for one
@@ -391,10 +430,24 @@ impl Scene for DownloadScreen {
         }
         self.poll_archives()?;
         // Turn the left knob to move the selection, like upstream USC.
-        let delta = knob_state.get_axis(Side::Left).delta;
-        if delta.abs() > 0.02 {
+        //
+        // The raw delta is a fraction of a detent, and handing it straight to
+        // `advance_selection` left the cursor between two entries, so the
+        // highlight slid around without ever settling on a song. Accumulate
+        // instead and spend whole entries, keeping the remainder for the next
+        // frame.
+        //
+        // The gamepad bridge scales the axis by the knob sensitivity before it
+        // reaches this state, so dividing by the same product makes the
+        // threshold a fixed number of detents whatever the setting is.
+        let sensitivity = GameConfig::get().knob_sensitivity.max(0.05);
+        let per_detent = KNOB_AXIS_PER_DETENT * sensitivity;
+        self.knob_progress += knob_state.get_axis(Side::Left).delta / per_detent;
+        let steps = (self.knob_progress / KNOB_DETENTS_PER_STEP).trunc();
+        if steps != 0.0 {
+            self.knob_progress -= steps * KNOB_DETENTS_PER_STEP;
             if let Ok(advance) = self.lua.globals().get::<Function>("advance_selection") {
-                let _ = advance.call::<()>(delta);
+                let _ = advance.call::<()>(steps as i32);
             }
         }
         while self.exit_rx.try_recv().is_ok() {
@@ -491,7 +544,7 @@ impl Scene for DownloadScreen {
             sample_owner: Marker::new(),
             preview_stop: Arc::new(AtomicBool::new(false)),
         };
-        set_global_env(location, "dlScreen", &lua).warn("register dlScreen");
+        register_dl_screen(&lua, location).warn("register dlScreen");
         self.service_provider
             .get_required::<LuaProvider>()
             .register_libraries(lua.clone(), "downloadscreen.lua")?;
