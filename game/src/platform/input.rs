@@ -453,8 +453,8 @@ impl IosTouchState {
     /// columns. Returns `None` when the touch is not on a laser, so the caller
     /// falls back to the button grid.
     ///
-    /// A full screen height of travel is one full turn, which makes the knob
-    /// reachable with a comfortable swipe on a tablet.
+    /// A full screen width of travel is one full turn, and the finger moves
+    /// sideways, which is how the arcade knob is turned in the first place.
     fn update_laser_drag(
         &mut self,
         id: u64,
@@ -478,15 +478,6 @@ impl IosTouchState {
                         _ => None,
                     }
                 });
-                // Diagnostic: the knob hit areas are small rings on the outer
-                // edges, and a touch that misses them silently falls through to
-                // the button grid. Log both so a "knob does nothing" report can
-                // be told apart from a missed hit.
-                log::info!(
-                    "laser drag began at ({x:.0},{y:.0}) size=({:.0},{:.0}) hit={hit:?}",
-                    self.width,
-                    self.height
-                );
                 hit
             }
             _ => self.laser_drags.get(&id).map(|(side, _)| *side),
@@ -497,18 +488,18 @@ impl IosTouchState {
 
         match phase {
             TouchPhase::Began => {
-                self.laser_drags.insert(id, (side, y));
+                self.laser_drags.insert(id, (side, x));
                 Some(Vec::new())
             }
             TouchPhase::Moved => {
-                let Some((_, last_y)) = self.laser_drags.get(&id).copied() else {
+                let Some((_, last_x)) = self.laser_drags.get(&id).copied() else {
                     return None;
                 };
-                self.laser_drags.insert(id, (side, y));
-                // Turning up moves the knob one way, down the other; the sign
-                // matches the desktop `Laser` axis convention.
-                let per_point = std::f32::consts::TAU / self.height.max(1.0) as f32;
-                let delta = -(y - last_y) as f32 * per_point;
+                self.laser_drags.insert(id, (side, x));
+                // Sliding the finger sideways turns the knob: to the right is
+                // clockwise, matching how the drawn pointer follows it.
+                let per_point = std::f32::consts::TAU / self.width.max(1.0) as f32;
+                let delta = (x - last_x) as f32 * per_point;
                 if delta == 0.0 {
                     return Some(Vec::new());
                 }

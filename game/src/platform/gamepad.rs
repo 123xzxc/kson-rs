@@ -81,7 +81,11 @@ impl GamepadButton {
 
 pub enum GamepadEvent {
     Button(UscButton, ElementState, SystemTime),
-    /// A stick deflection: which knob it turns and its position.
+    /// One axis of a knob, as reported by the controller.
+    ///
+    /// The PHAC firmware turns an encoder's absolute position into a stick
+    /// axis: left knob -> the left stick's X, right knob -> its Y. The value
+    /// is a position, not a rotation, and it wraps.
     Axis(Side, f32, SystemTime),
 }
 
@@ -280,12 +284,13 @@ fn usc_from_axis(axis: crate::gilrs_compat::Axis) -> Option<UscButton> {
     })
 }
 
-/// Which knob each physical axis drives.
+/// Which physical axis drives each knob.
 ///
-/// Only the left stick is used: its vertical axis turns the left knob and its
-/// horizontal axis the right one, matching the on-screen panel.
-pub const AXIS_LEFT_KNOB: i32 = 1;
-pub const AXIS_RIGHT_KNOB: i32 = 0;
+/// The PHAC firmware puts the left encoder on the left stick's X and the right
+/// encoder on its Y, so that is the default. The settings screen can rebind
+/// both.
+pub const AXIS_LEFT_KNOB: i32 = 0;
+pub const AXIS_RIGHT_KNOB: i32 = 1;
 
 fn bindings() -> &'static Mutex<std::collections::HashMap<UscButton, BindingRef>> {
     static BINDINGS: OnceLock<Mutex<std::collections::HashMap<UscButton, BindingRef>>> =
@@ -458,9 +463,8 @@ pub fn push_button(raw_button: i32, pressed: bool) {
 
 /// Called from the Objective-C `GCController` handlers.
 ///
-/// `knob` is 0 for the left knob and 1 for the right; the gamepad module maps
-/// the physical stick onto them so only the left stick is used: its vertical
-/// axis turns the left knob and its horizontal axis turns the right one.
+/// `knob` is 0 for the left knob and 1 for the right; `value` is that knob's
+/// axis position in -1.0..=1.0.
 pub fn push_axis(knob: i32, value: f32) {
     let side = if knob == 0 { Side::Left } else { Side::Right };
     if let Ok(mut q) = queue().lock() {
@@ -468,24 +472,43 @@ pub fn push_axis(knob: i32, value: f32) {
     }
 }
 
-/// The last raw axis value seen for the left and right knob.
+/// The last axis value seen for the left and right knob.
 ///
-/// A stick that returns to centre reports an absolute position, but an arcade
-/// hand controller's lever stays where it was let go, so the only meaningful
-/// signal is the change since the previous report. Keeping the previous value
-/// here lets [`drain`] turn absolute axis reports into the relative knob deltas
-/// the game expects (the same shape `mouse_knobs` and the on-screen drag use).
-fn last_axis() -> &'static Mutex<[f32; 2]> {
-    static LAST: OnceLock<Mutex<[f32; 2]>> = OnceLock::new();
-    LAST.get_or_init(|| Mutex::new([0.0, 0.0]))
+/// An arcade knob never springs back and its position wraps, so the only
+/// meaningful signal is how far it moved since the previous report. Keeping the
+/// previous value lets [`drain`] turn the position into the relative knob delta
+/// the game expects.
+fn last_axis() -> &'static Mutex<[Option<f32>; 2]> {
+    static LAST: OnceLock<Mutex<[Option<f32>; 2]>> = OnceLock::new();
+    LAST.get_or_init(|| Mutex::new([None, None]))
 }
 
-/// How much one full deflection of the stick turns a knob.
+/// Turns a step between two axis positions into the shortest rotation.
 ///
-/// The laser reads a position in half-turns (`0.45` per input in
-/// `take_laser_input`), so a full sweep has to cover a comparable angle to feel
-/// like the arcade knob.
-const AXIS_TO_LASER: f32 = 4.0;
+/// The encoder covers two turns and its position wraps from one end of the
+/// axis to the other, so a raw `-1.9` step is really `+0.1` the other way.
+/// Normalising the step into -1.0..=1.0 keeps a knob turned past the seam
+/// spinning the same direction instead of jumping back.
+fn wrapped_step(delta: f32) -> f32 {
+    let mut d = delta;
+    while d > 1.0 {
+        d -= 2.0;
+    }
+    while d < -1.0 {
+        d += 2.0;
+    }
+    d
+}
+
+/// A step smaller than this is noise on a parked knob, not a turn.
+const AXIS_STEP_DEADZONE: f32 = 0.004;
+
+/// How far a step of the axis turns the knob.
+///
+/// `take_laser_input` scales its input by 0.45, and the laser wants roughly a
+/// quarter turn per encoder step, so the step is scaled up to match. Tuned so
+/// one detent of the encoder moves the laser a visible but controllable amount.
+const KNOB_AXIS_TO_LASER: f32 = 0.9;
 
 /// Drains the pending events and folds them into `UscInputEvent`s.
 ///
@@ -502,22 +525,22 @@ pub fn drain(knob_state: &mut LaserState) -> Vec<UscInputEvent> {
                 out.push(UscInputEvent::Button(button, state, time));
             }
             GamepadEvent::Axis(side, value, time) => {
-                // Turn the absolute axis report into a delta since the previous
-                // one, so a lever that does not spring back still reads as a
-                // knob turn rather than snapping the laser to a fixed angle.
                 let index = if side == Side::Left { 0 } else { 1 };
-                let delta = match last_axis().lock() {
-                    Ok(mut last) => {
-                        let delta = (value - last[index]) * AXIS_TO_LASER;
-                        last[index] = value;
-                        delta
-                    }
-                    Err(_) => 0.0,
+                let Ok(mut last) = last_axis().lock() else {
+                    continue;
                 };
-                if delta == 0.0 {
+                let previous = last[index].replace(value);
+                let Some(previous) = previous else {
+                    // First report only establishes where the knob is.
+                    continue;
+                };
+                let step = wrapped_step(value - previous);
+                if step.abs() < AXIS_STEP_DEADZONE {
                     continue;
                 }
-                knob_state.update_delta(side, delta);
+                // The game reads the laser in half-turns of the knob, so a full
+                // sweep of the axis has to cover a comparable angle.
+                knob_state.update_delta(side, step * KNOB_AXIS_TO_LASER);
                 out.push(UscInputEvent::Laser(*knob_state, time));
             }
         }

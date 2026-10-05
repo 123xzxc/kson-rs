@@ -519,8 +519,12 @@ pub unsafe extern "C" fn kson_ios_gamepad_button(button: i32, pressed: bool) {
     crate::platform::gamepad::push_button(button, pressed);
 }
 
-/// Gamepad stick position from `GCController`; `side` is 0 for left, 1 for
-/// right.
+/// Gamepad knob position from `GCController`; `side` is 0 for the left knob and
+/// 1 for the right, and `value` is that knob's axis position.
+///
+/// The PHAC firmware reports each encoder as an absolute, wrapping stick axis,
+/// so `value` is a position rather than a rotation; the platform layer turns it
+/// into a delta.
 ///
 /// # Safety
 /// `value` is expected in -1.0..=1.0.
