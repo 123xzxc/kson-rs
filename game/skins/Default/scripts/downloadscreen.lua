@@ -230,7 +230,7 @@ function render_hotkeys()
     gfx.Text("FXL: Levels", resX/2 - 20, resY - 10)
     gfx.FontSize(24)
     gfx.TextAlign(gfx.TEXT_ALIGN_LEFT, gfx.TEXT_ALIGN_BOTTOM)
-    gfx.Text("Tap: select / tap again: download", 10, resY - 10)
+    gfx.Text("Tap: select / tap again: download / swipe: scroll", 10, resY - 10)
     gfx.Restore()
 end
 
@@ -253,6 +253,48 @@ function render_info()
     gfx.FontSize(20)
     gfx.Text("https://ksm.dev/", xmax + 13, resY - 3)
     gfx.Restore()
+end
+
+-- The on-screen controller is hidden on this screen: the list is driven by
+-- taps and swipes, and the pad's keys only sat on top of the entries. That
+-- leaves the screen without a way out, so it draws its own Back button.
+local backButtonW = 240
+local backButtonH = 100
+
+function back_button_rect()
+    return resX - backButtonW - 20, 20, backButtonW, backButtonH
+end
+
+function back_button_pressed(mx, my)
+    local x, y, w, h = back_button_rect()
+    return mx >= x and mx <= x + w and my >= y and my <= y + h
+end
+
+function render_back_button()
+    local x, y, w, h = back_button_rect()
+    gfx.Save()
+    gfx.ResetTransform()
+    gfx.BeginPath()
+    gfx.RoundedRect(x, y, w, h, 18)
+    gfx.FillColor(0,0,0,190)
+    gfx.Fill()
+    gfx.StrokeColor(255,255,255,220)
+    gfx.StrokeWidth(3)
+    gfx.Stroke()
+    gfx.FillColor(255,255,255)
+    gfx.TextAlign(gfx.TEXT_ALIGN_CENTER + gfx.TEXT_ALIGN_MIDDLE)
+    gfx.FontSize(48)
+    gfx.Text("Back", x + w/2, y + h/2)
+    gfx.Restore()
+end
+
+-- Saves the "Downloaded" tags and leaves the screen. Shared by the pad's Back
+-- key and by the drawn button.
+function exit_screen()
+    dlcache = io.open(cachepath, "w")
+    dlcache:write(json.encode(downloaded))
+    dlcache:close()
+    dlScreen.Exit()
 end
 
 function render(deltaTime)
@@ -295,6 +337,7 @@ function render(deltaTime)
     render_hotkeys()
     render_loading()
     render_info()
+    render_back_button()
 
     local fifthX = resX/5
     local fifthY = resY/5
@@ -447,10 +490,7 @@ function button_pressed(button)
             screenState = 0
         end
     elseif button == game.BUTTON_BCK then
-        dlcache = io.open(cachepath, "w")
-        dlcache:write(json.encode(downloaded))
-        dlcache:close()
-        dlScreen.Exit() 
+        exit_screen()
     end
 end
 
@@ -460,6 +500,10 @@ end
 function mouse_pressed(button, mx, my)
     if button ~= 0 then return end
     if mx == nil then mx, my = game.GetMousePos() end
+    if back_button_pressed(mx, my) then
+        exit_screen()
+        return
+    end
     if screenState == 1 then
         local index = math.floor((my - resY / 2) / 40 + 0.5) + levelcursor + 1
         if index >= 1 and index <= 20 then

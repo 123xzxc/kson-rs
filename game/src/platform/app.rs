@@ -276,8 +276,13 @@ impl IosApp {
         // The panel is a gameplay controller: the title screen is driven by
         // taps and the panel would sit on top of the menu, so it steps aside
         // there and comes back as soon as another screen is up.
-        self.touch
-            .set_auto_hidden(self.game.top_scene_name() == Some("Main Menu"));
+        // The title screen is driven by taps and the download screen by taps and
+        // swipes, so the button grid has nothing to do on either: it would only
+        // sit on top of the widgets and swallow the taps.
+        self.touch.set_auto_hidden(matches!(
+            self.game.top_scene_name(),
+            Some("Main Menu") | Some("Get Songs")
+        ));
         self.flush_pending_touches();
         // The overlay is drawn inside `render_ios`, before the frame is
         // presented, through the same canvas the scenes use.

@@ -208,10 +208,6 @@ impl SongSelectScene {
         // `program_control` itself: the dialog is built before the scene has
         // that channel, so it reports the choice on its own channel instead.
         let (provider_switch_tx, provider_switch_rx) = mpsc::channel();
-        let provider_index = match song_select.song_provider {
-            SongProviderSelection::Nautica => 1usize,
-            SongProviderSelection::Default | SongProviderSelection::Files => 0,
-        };
         let mut settings_dialog =
             SettingsDialog::general_settings(input_state.clone(), services.create_scope(), auto_tx);
         {
@@ -231,7 +227,15 @@ impl SongSelectScene {
                             GameConfig::get_mut().song_select.provider = kind;
                             let _ = set_tx.send(kind.into());
                         }),
-                        get: Box::new(move || provider_index),
+                        // Read the config instead of a value captured when the
+                        // screen opened: the dialog keeps this closure for the
+                        // whole visit, so a snapshot made every press compute
+                        // from the value it started with and the switch looked
+                        // like it needed two presses to take effect.
+                        get: Box::new(|| match GameConfig::get().song_select.provider {
+                            SongProviderKind::Files => 0usize,
+                            SongProviderKind::Nautica => 1usize,
+                        }),
                     },
                 )],
             ));

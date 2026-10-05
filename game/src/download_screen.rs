@@ -240,6 +240,19 @@ pub struct DownloadScreen {
     /// The knob reports an angle, so the movement is accumulated and spent one
     /// entry at a time instead of being handed to the script as a fraction.
     knob_progress: f32,
+    /// The button of a press that has not reached the script yet.
+    ///
+    /// A press begins either a tap or a swipe and only the release says which,
+    /// so it is held back: a tap selects (and a second tap downloads) the entry
+    /// under the finger, while a swipe pages the list and must not select the
+    /// entry it happened to start on.
+    pending_press: Option<i32>,
+    /// Where the finger was at the previous move, while a drag is running.
+    drag_origin: Option<(f64, f64)>,
+    /// Render pixels of travel the current drag has not spent on an entry yet.
+    drag_progress: f32,
+    /// Set once a drag has moved far enough that it is no longer a tap.
+    drag_moved: bool,
 }
 
 /// How far one encoder detent moves the knob axis, matching the gamepad
@@ -248,6 +261,15 @@ const KNOB_AXIS_PER_DETENT: f32 = 0.078;
 
 /// How many detents move the Get Songs selection by one entry.
 const KNOB_DETENTS_PER_STEP: f32 = 3.0;
+
+/// How far a finger may travel before the gesture stops being a tap.
+const DRAG_TAP_SLOP: f64 = 14.0;
+
+/// How far a finger has to travel to move the selection by one entry.
+///
+/// The entries are 770 by 320 render pixels, so this is a comfortable swipe
+/// per entry without making the list fly past under the finger.
+const DRAG_POINTS_PER_ENTRY: f32 = 200.0;
 
 impl DownloadScreen {
     pub fn new(service_provider: ServiceProvider) -> Self {
@@ -285,6 +307,10 @@ impl DownloadScreen {
             should_suspend: false,
             cursor: (0.0, 0.0),
             knob_progress: 0.0,
+            pending_press: None,
+            drag_origin: None,
+            drag_progress: 0.0,
+            drag_moved: false,
         }
     }
     /// Spawns the worker that downloads and unpacks the archive for one
@@ -335,9 +361,11 @@ impl DownloadScreen {
             info!("Downloaded {} into the song folder", response.id);
             self.archive_done = None;
             self.refresh_song_providers();
-            // The script shows a "Downloaded" tag from its own cache, so it
-            // needs to run again to pick the new entry up.
-            let _ = self.reload_scripts();
+            // The tag is not refreshed by reloading the script: rebuilding the
+            // Lua state reset the cursor, the filters and the loaded pages, so
+            // every download threw the list away and started over. The script's
+            // own `archive_callback` already marks the entry as downloaded and
+            // `render` picks the tag up on the next frame.
         }
         if self.archive_done.is_none() {
             if let Ok(request) = self.archive_rx.try_recv() {
@@ -372,6 +400,20 @@ impl DownloadScreen {
             .service_provider
             .get_required_mut::<NauticaSongProvider>();
         nautica.write().expect("Lock error").refresh();
+    }
+    /// Hands one press to the script at the current cursor position.
+    fn call_mouse_pressed(&self, code: i32) {
+        if let Ok(mouse_pressed) = self.lua.globals().get::<Function>("mouse_pressed") {
+            if let Err(e) = mouse_pressed.call::<()>((code, self.cursor.0, self.cursor.1)) {
+                log::error!("{e}");
+            }
+        }
+    }
+    /// Moves the script's selection by whole entries.
+    fn advance_selection(&self, steps: i32) {
+        if let Ok(advance) = self.lua.globals().get::<Function>("advance_selection") {
+            let _ = advance.call::<()>(steps);
+        }
     }
 }
 /// Fetches the chart archive and unpacks it under `songs/nautica/<id>/`,
@@ -442,13 +484,15 @@ impl Scene for DownloadScreen {
         // threshold a fixed number of detents whatever the setting is.
         let sensitivity = GameConfig::get().knob_sensitivity.max(0.05);
         let per_detent = KNOB_AXIS_PER_DETENT * sensitivity;
-        self.knob_progress += knob_state.get_axis(Side::Left).delta / per_detent;
+        // Either knob pages the list: a player who reaches for the right one
+        // should not have to remember which side this screen listens to.
+        let knob_delta =
+            knob_state.get_axis(Side::Left).delta + knob_state.get_axis(Side::Right).delta;
+        self.knob_progress += knob_delta / per_detent;
         let steps = (self.knob_progress / KNOB_DETENTS_PER_STEP).trunc();
         if steps != 0.0 {
             self.knob_progress -= steps * KNOB_DETENTS_PER_STEP;
-            if let Ok(advance) = self.lua.globals().get::<Function>("advance_selection") {
-                let _ = advance.call::<()>(steps as i32);
-            }
+            self.advance_selection(steps as i32);
         }
         while self.exit_rx.try_recv().is_ok() {
             self.exit_requested = true;
@@ -469,43 +513,73 @@ impl Scene for DownloadScreen {
         render.call::<()>(dt / 1000.0)?;
         Ok(())
     }
-    /// Forwards mouse presses to the script, exactly like the title screen.
+    /// Forwards taps to the script and turns swipes into paging.
     ///
     /// iOS turns a touch into a synthetic mouse press, and the download screen
     /// has no keyboard for the hotkeys, so a tap is the only way to pick a song
-    /// without the on-screen panel.
+    /// without the on-screen panel - and the panel is hidden here, which is why
+    /// the list also pages on a swipe. The press is held back until the finger
+    /// lifts so that a swipe does not select (or download) the entry it started
+    /// on.
     fn on_event(&mut self, event: &winit::event::Event<UscInputEvent>) {
-        use winit::event::{Event, WindowEvent};
-        let code = match event {
+        use winit::event::{ElementState, Event, MouseButton, WindowEvent};
+        match event {
             Event::WindowEvent {
                 event: WindowEvent::CursorMoved { position, .. },
                 ..
             } => {
+                if let Some((last_x, last_y)) = self.drag_origin {
+                    let (dx, dy) = (position.x - last_x, position.y - last_y);
+                    self.drag_origin = Some((position.x, position.y));
+                    if !self.drag_moved && dx.abs() + dy.abs() > DRAG_TAP_SLOP {
+                        self.drag_moved = true;
+                    }
+                    if self.drag_moved {
+                        // Whichever axis the finger travelled further along is
+                        // the one that moves the list, so a diagonal drag does
+                        // not count twice.
+                        let travel = if dx.abs() >= dy.abs() { dx } else { dy };
+                        self.drag_progress += travel as f32;
+                        let steps = (self.drag_progress / DRAG_POINTS_PER_ENTRY).trunc();
+                        if steps != 0.0 {
+                            self.drag_progress -= steps * DRAG_POINTS_PER_ENTRY;
+                            self.advance_selection(steps as i32);
+                        }
+                    }
+                }
                 self.cursor = (position.x, position.y);
-                return;
             }
             Event::WindowEvent {
-                event:
-                    WindowEvent::MouseInput {
-                        state: winit::event::ElementState::Pressed,
-                        button,
-                        ..
-                    },
+                event: WindowEvent::MouseInput { state, button, .. },
                 ..
-            } => match button {
-                winit::event::MouseButton::Left => 0,
-                winit::event::MouseButton::Right => 2,
-                winit::event::MouseButton::Middle => 1,
-                winit::event::MouseButton::Forward => 3,
-                winit::event::MouseButton::Back => 4,
-                winit::event::MouseButton::Other(b) => *b,
-            },
-            _ => return,
-        };
-        if let Ok(mouse_pressed) = self.lua.globals().get::<Function>("mouse_pressed") {
-            if let Err(e) = mouse_pressed.call::<()>((code, self.cursor.0, self.cursor.1)) {
-                log::error!("{e}");
+            } => {
+                let code = match button {
+                    MouseButton::Left => 0,
+                    MouseButton::Right => 2,
+                    MouseButton::Middle => 1,
+                    MouseButton::Forward => 3,
+                    MouseButton::Back => 4,
+                    MouseButton::Other(b) => *b as i32,
+                };
+                match state {
+                    ElementState::Pressed => {
+                        self.pending_press = Some(code);
+                        self.drag_origin = Some(self.cursor);
+                        self.drag_progress = 0.0;
+                        self.drag_moved = false;
+                    }
+                    ElementState::Released => {
+                        self.drag_origin = None;
+                        let pressed = self.pending_press.take();
+                        if !self.drag_moved {
+                            if let Some(code) = pressed {
+                                self.call_mouse_pressed(code);
+                            }
+                        }
+                    }
+                }
             }
+            _ => {}
         }
     }
     fn on_button_pressed(&mut self, button: UscButton, _timestamp: SystemTime) {
@@ -551,6 +625,10 @@ impl Scene for DownloadScreen {
         self.lua = lua;
         self.exit_rx = exit_rx;
         self.archive_rx = archive_rx;
+        self.pending_press = None;
+        self.drag_origin = None;
+        self.drag_progress = 0.0;
+        self.drag_moved = false;
         Ok(())
     }
     fn debug_ui(&mut self, _ctx: &egui::Context) -> Result<()> {

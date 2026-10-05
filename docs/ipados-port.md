@@ -199,6 +199,30 @@ ObjC 侧无法本地编译，只能靠 CI 验证。
 | `0e61ea9` | 方向反、太灵敏 | 翻转实体旋钮方向并降低灵敏度 |
 | `6d5a07f` | 灵敏度不可调 | 设置里加 Knob sensitivity（0.05–3.0） |
 | `29f15d4` | **一个旋钮同时带动左右两边激光** | 见下方「轴捕获」 |
+| 本次 | **一个旋钮仍然会带动另一边激光** | 见下方「轴串扰」 |
+
+#### 轴串扰
+
+现象：`29f15d4` 之后绑定已经是 `axis 0` / `axis 1`，但打歌时转任意一个旋钮，
+**两边激光仍然一起动**（另一边幅度约是被转那边的 5%–20%）。
+
+日志证据（`ios(17).log`）：
+
+```
+knob Left  axis=0.4365 step=0.0326 other=-0.0993
+knob Right axis=-0.0993 step=0.0000 other=0.4365
+knob Left  axis=0.4524 step=0.0160 other=-0.3935
+knob Right axis=-0.3935 step=-0.2942 other=0.4524
+```
+
+转右旋钮时右轴每包走 ~0.24（约 3 个 detent），而**没被转的左轴也在走 0.02–0.03**。
+固件每个包会把摇杆的**两个轴一起采样上报**，没被转的那个轴读数会漂移一点点；
+这个漂移刚好超过 Rust 侧 `AXIS_STEP_DEADZONE`（0.01），于是也生成了一次激光事件。
+
+修复：`KsonGamepad.m::feedKnobsX` 里加**主轴判定**——
+同一包里两个轴都动了时，位移小的那个丢掉，除非两者量级接近（`KsonKnobAxisDominance = 2.5`，
+对应「两个旋钮一起转」）。被转的轴位移是闲置轴的数倍，所以能干净分开，
+而慢速转动不会因为阈值被吞掉（判据是比值，不是绝对阈值）。
 
 #### 轴捕获（`29f15d4`）
 
@@ -227,6 +251,10 @@ ObjC 侧无法本地编译，只能靠 CI 验证。
 | `25098aa` | **点 Start / 双击谱面不下载** | 见下方「dlScreen 绑定」 |
 | `25098aa` | **旋钮无极、定不到谱面上** | 见下方「旋钮步进」 |
 | `25098aa` | 谱面目录找不到 | 启动日志打印目录与条目数，并写入 `PUT_CHARTS_HERE.txt` 标记 |
+| `0d9eb10` | 切换歌曲来源要按两次 | 见下方「来源切换要按两次」 |
+| 本次 | **每下载一次都会刷新下载界面** | 见下方「下载后不再重建 Lua」 |
+| 本次 | 下载界面没有返回键、其他虚拟键点了没反应 | 见下方「下载界面的触摸」 |
+| 本次 | 下载界面不能拖动翻页 | 见下方「下载界面的触摸」 |
 
 #### dlScreen 绑定（`25098aa`）
 
@@ -282,6 +310,53 @@ userdata`，Start 和双击都不下载。
 - 该消息原来用 `Scenes::suspend_top()`，会把旧选曲界面留在场景栈里（每切一次多一层，
   Back 会一层层退回历史列表）。现在改成 `Scenes::pop_top()`，让界面**替换**自己。
 - `SettingsDialog::push_tab` 用来在对话框建好之后再追加标签页。
+
+##### 来源切换要按两次（`0d9eb10` 遗留）
+
+现象：设置里 Song Provider 标签页显示 `Nautica (Online)`，点一次还是 Online，
+点两次才变 `Local Files`。
+
+根因：标签页的 `get` 闭包捕获的是**界面创建时的快照** `provider_index`，
+而 `change_setting` 是 `set((get() + steps).rem_euclid(len))`。第一次按下时
+`get()` 仍是旧值，算出来的目标值和当前值相同，于是显示不动；
+但 `set` 已经写了配置、场景也重进了一次，第二次按下才从新的快照算出可见的变化。
+
+修复：`get` 改成**实时读** `GameConfig::get().song_select.provider`，按一次即可切换，
+显示也立刻跟上（`on_button_press` 结束时会重新把 `SettingsDiag` 塞回 Lua）。
+
+##### 下载后不再重建 Lua
+
+现象：每下载成功一首，下载界面就整个重来一遍（光标回到第一首、已加载的页全丢、
+需要重新等 HTTP）。
+
+根因：`poll_archives` 在回调之后调用 `reload_scripts()`，而那是**重建整个 Lua 状态**
+（`LuaProvider::new_lua()` + 重新注册库），脚本里的 `songs` / `cursorPos` /
+筛选状态全部归零。
+
+修复：删掉这次 `reload_scripts()`。脚本自己的 `archive_callback` 已经写了
+`downloaded[id] = "Downloaded"`，下一帧 `render` 就会把标签画出来，
+本地谱面列表则由 `refresh_song_providers()` 刷新，不需要重建 Lua。
+
+##### 下载界面的触摸
+
+这一屏是 `touch_as_mouse()`，触摸被转成合成鼠标事件，因此：
+
+* 屏幕面板（`IosTouchState`）**碰不到**——`route_egui_touch` 直接吞掉了触摸，
+  面板上的键「点了没反应」。现在和主菜单一样 `set_auto_hidden`，整块面板和左上角
+  隐藏按钮都不再绘制。
+* 拖动本来只更新光标，不会翻页。
+
+改动：
+
+* `app.rs` 的 `set_auto_hidden` 扩展到 `"Get Songs"`。
+* 皮肤 `downloadscreen.lua` 自己画一个右上角 **Back** 按钮（`RoundedRect` + 文字），
+  命中后走 `exit_screen()`（存 `nautica.json` 再 `dlScreen.Exit()`），
+  手柄的 `BUTTON_BCK` 复用同一个函数。
+* `DownloadScreen::on_event` 现在**把按压押后到抬手**再交给脚本：
+  手势位移超过 `DRAG_TAP_SLOP`（14px）就算拖动，只翻页不选中；
+  否则按点击处理（选中 / 再点一次下载）。拖动每 `DRAG_POINTS_PER_ENTRY`（200px）
+  翻一格，取位移更大的那个轴，斜拖不会算两次。
+* `tick` 里翻页的旋钮增量改成**左右两个旋钮相加**，所以转哪边都能翻。
 
 ### 4.7 配置持久化
 

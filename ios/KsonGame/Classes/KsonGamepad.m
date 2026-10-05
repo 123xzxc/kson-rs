@@ -41,6 +41,17 @@ typedef NS_ENUM(int32_t, KsonGamepadAxisRef) {
     KsonGamepadAxisRightY = 3,
 };
 
+/// How much further the turned axis has to move than the idle one before the
+/// idle one is dropped.
+///
+/// The firmware sends both axes of the stick in every packet, sampling the
+/// encoder that did not turn along with the one that did, and that idle sample
+/// wanders by a fraction of a detent. Forwarding it turns the other laser as
+/// well, which the player sees as "one knob moves both lasers". A turned axis
+/// moves several times further than the idle one, so a factor well above one
+/// separates them while still letting both knobs be turned at once.
+static const float KsonKnobAxisDominance = 2.5f;
+
 @implementation KsonGamepad
 
 + (void)start {
@@ -232,17 +243,35 @@ typedef NS_ENUM(int32_t, KsonGamepadAxisRef) {
         rightKnobAxis = KsonGamepadAxisLeftY;
     }
 
+    // Only the axis that actually turned is forwarded. Every packet carries
+    // both, and the one that did not turn still wanders by a fraction of a
+    // detent - enough to pass the Rust side's noise gate and drag the other
+    // laser along. See `KsonKnobAxisDominance`.
+    BOOL x_moved = dx > 0.0f;
+    BOOL y_moved = dy > 0.0f;
+    if (x_moved && y_moved) {
+        if (dx > dy * KsonKnobAxisDominance) {
+            y_moved = NO;
+        } else if (dy > dx * KsonKnobAxisDominance) {
+            x_moved = NO;
+        }
+    }
+
     // Send each axis to the knob that is bound to it, whichever stick the
     // axis came from.
-    if (leftKnobAxis == xRef) {
-        kson_ios_gamepad_axis(0, x);
-    } else if (rightKnobAxis == xRef) {
-        kson_ios_gamepad_axis(1, x);
+    if (x_moved) {
+        if (leftKnobAxis == xRef) {
+            kson_ios_gamepad_axis(0, x);
+        } else if (rightKnobAxis == xRef) {
+            kson_ios_gamepad_axis(1, x);
+        }
     }
-    if (leftKnobAxis == yRef) {
-        kson_ios_gamepad_axis(0, y);
-    } else if (rightKnobAxis == yRef) {
-        kson_ios_gamepad_axis(1, y);
+    if (y_moved) {
+        if (leftKnobAxis == yRef) {
+            kson_ios_gamepad_axis(0, y);
+        } else if (rightKnobAxis == yRef) {
+            kson_ios_gamepad_axis(1, y);
+        }
     }
 }
 
