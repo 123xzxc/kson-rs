@@ -64,7 +64,6 @@ use button_codes::{CustomBindingFilter, UscInputEvent};
 use clap::Parser;
 use companion_interface::CompanionServer;
 use multiplayer::MultiplayerService;
-use songselect::SongProviderSelection;
 pub use vg_ui::Vgfx;
 
 use femtovg as vg;
@@ -309,6 +308,16 @@ impl Scenes {
         }
     }
 
+    /// Drops the top scene.
+    ///
+    /// Used when a scene re-enters itself with different data: the song select
+    /// switching song provider. Suspending it would stack a second copy behind
+    /// the new screen, so Back would walk through every list the player had
+    /// visited instead of leaving the screen.
+    pub fn pop_top(&mut self) {
+        self.active.pop();
+    }
+
     pub fn lighting(&self) -> LightingData {
         if let Some(t) = self.transition.as_ref() {
             return t.lighting();
@@ -503,7 +512,9 @@ impl UscApp {
             scenes.loaded.push(title);
             if GameConfig::get().args.notitle || cfg!(target_os = "android") {
                 let songsel = Box::new(songselect::SongSelectScene::new(
-                    Box::new(songselect::SongSelect::new(SongProviderSelection::Nautica)),
+                    Box::new(songselect::SongSelect::new(
+                        GameConfig::get().song_select.provider.into(),
+                    )),
                     services.create_scope(),
                 ));
                 scenes.loaded.push(songsel);

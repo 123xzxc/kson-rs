@@ -350,7 +350,11 @@ impl GameMain {
             match control_msg {
                 ControlMessage::None => {}
                 ControlMessage::SongSelect(song_provider_selection) => {
-                    scenes.suspend_top();
+                    // A provider switch re-enters the song select: drop the one
+                    // that asked for it instead of suspending it, otherwise
+                    // every list the player visited stays on the stack and Back
+                    // walks through them.
+                    scenes.pop_top();
 
                     if let Ok(_arena) = lua_arena.read() {
                         let transition_lua = transition_lua.clone();
@@ -1108,7 +1112,8 @@ impl GameMain {
             match control_msg {
                 ControlMessage::None => {}
                 ControlMessage::SongSelect(selection) => {
-                    scenes.suspend_top();
+                    // See the desktop path: the screen replaces itself.
+                    scenes.pop_top();
                     if let Ok(_arena) = lua_arena.read() {
                         scenes.transition = Transition::new(
                             transition_lua.clone(),

@@ -190,6 +190,22 @@ pub struct SongSelectSettings {
     pub sorting: song_provider::SongSort,
     pub filter: song_provider::SongFilter,
     pub last_played: song_provider::SongDiffId,
+    /// Which list the song select opens with.
+    pub provider: SongProviderKind,
+}
+
+/// Which song list the song select screen opens with.
+///
+/// Persisted so the choice the settings dialog's "Song Provider" tab makes
+/// survives a restart; without it the player would have to switch back to their
+/// own charts on every visit.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SongProviderKind {
+    /// The nautica catalogue, streamed from ksm.dev.
+    #[default]
+    Nautica,
+    /// The charts under `songs_path`, including the ones Get Songs downloaded.
+    Files,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]

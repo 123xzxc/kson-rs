@@ -33,7 +33,7 @@ use crate::platform::render::RenderContext;
 use crate::platform::time::FrameTracker;
 use crate::scene::Scene;
 use crate::song_provider;
-use crate::songselect::{SongProviderSelection, SongSelect, SongSelectScene};
+use crate::songselect::{SongSelect, SongSelectScene};
 use crate::vg_ui::Vgfx;
 use crate::{game_data, FrameInput, LuaArena, Scenes};
 
@@ -178,7 +178,9 @@ impl IosApp {
             scenes.loaded.push(title);
             if GameConfig::get().args.notitle {
                 let songsel = Box::new(SongSelectScene::new(
-                    Box::new(SongSelect::new(SongProviderSelection::Nautica)),
+                    Box::new(SongSelect::new(
+                        GameConfig::get().song_select.provider.into(),
+                    )),
                     services.create_scope(),
                 ));
                 scenes.loaded.push(songsel);

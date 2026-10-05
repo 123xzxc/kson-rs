@@ -640,6 +640,14 @@ impl SettingsDialog {
         }
     }
 
+    /// Appends a tab to the dialog.
+    ///
+    /// A scene builds its dialog before it has the control channel a tab may
+    /// want to report through, so a tab that needs one is added afterwards.
+    pub fn push_tab(&mut self, tab: SettingsDialogTab) {
+        self.tabs.push(tab);
+    }
+
     pub fn song_provider_select(
         input_state: InputState,
         services: di::ServiceProvider,

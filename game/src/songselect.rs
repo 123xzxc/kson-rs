@@ -1,7 +1,7 @@
 use crate::{
     async_service::AsyncService,
     button_codes::{LaserAxis, LaserState, UscButton, UscInputEvent},
-    config::GameConfig,
+    config::{GameConfig, SongProviderKind},
     game_main::AutoPlay,
     help::await_task,
     input_state::InputState,
@@ -9,7 +9,7 @@ use crate::{
     multiplayer::{self, MultiplayerState},
     results::Score,
     scene::{Scene, SceneData},
-    settings_dialog::SettingsDialog,
+    settings_dialog::{SettingsDialog, SettingsDialogSetting, SettingsDialogTab},
     song_provider::{
         self, DiffId, ScoreProvider, ScoreProviderEvent, SongDiffId, SongFilter, SongFilterType,
         SongId, SongProvider, SongProviderEvent, SongSort,
@@ -82,6 +82,15 @@ pub enum SongProviderSelection {
     Default,
     Files,
     Nautica,
+}
+
+impl From<SongProviderKind> for SongProviderSelection {
+    fn from(kind: SongProviderKind) -> Self {
+        match kind {
+            SongProviderKind::Files => Self::Files,
+            SongProviderKind::Nautica => Self::Nautica,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -166,6 +175,11 @@ pub struct SongSelectScene {
     auto_rx: Receiver<crate::game_main::AutoPlay>,
     multiplayer: RefMut<multiplayer::MultiplayerService>,
     collection_dialog: Option<favourite_dialog::CollectionDialog>,
+    /// What the settings dialog's "Song Provider" tab last asked for.
+    ///
+    /// The dialog is built before the scene has `program_control`, so the tab
+    /// reports the choice here and `tick` forwards it.
+    provider_switch_rx: Receiver<SongProviderSelection>,
 }
 
 impl SongSelectScene {
@@ -188,6 +202,40 @@ impl SongSelectScene {
             .init_scores(&mut initial_songs.iter());
         song_select.songs.add(initial_songs, initial_order);
         let (auto_tx, auto_rx) = mpsc::channel();
+        // The screen can list either the charts on disk or the nautica
+        // catalogue, and the settings dialog is the one place a touch screen can
+        // reach, so the switch lives there as a tab. The tab cannot send on
+        // `program_control` itself: the dialog is built before the scene has
+        // that channel, so it reports the choice on its own channel instead.
+        let (provider_switch_tx, provider_switch_rx) = mpsc::channel();
+        let provider_index = match song_select.song_provider {
+            SongProviderSelection::Nautica => 1usize,
+            SongProviderSelection::Default | SongProviderSelection::Files => 0,
+        };
+        let mut settings_dialog =
+            SettingsDialog::general_settings(input_state.clone(), services.create_scope(), auto_tx);
+        {
+            let set_tx = provider_switch_tx.clone();
+            settings_dialog.push_tab(SettingsDialogTab::new(
+                "Song Provider",
+                vec![(
+                    "List".into(),
+                    SettingsDialogSetting::Enum {
+                        options: vec!["Local Files".into(), "Nautica (Online)".into()],
+                        set: Box::new(move |index| {
+                            let kind = if index == 0 {
+                                SongProviderKind::Files
+                            } else {
+                                SongProviderKind::Nautica
+                            };
+                            GameConfig::get_mut().song_select.provider = kind;
+                            let _ = set_tx.send(kind.into());
+                        }),
+                        get: Box::new(move || provider_index),
+                    },
+                )],
+            ));
+        }
         Self {
             filter_lua: LuaProvider::new_lua(),
             sort_lua: LuaProvider::new_lua(),
@@ -203,11 +251,8 @@ impl SongSelectScene {
             mixer: services.get_required(),
             sample_owner,
             input_state: input_state.clone(),
-            settings_dialog: SettingsDialog::general_settings(
-                input_state,
-                services.create_scope(),
-                auto_tx,
-            ),
+            settings_dialog,
+            provider_switch_rx,
             async_worker: services.get_required(),
             multiplayer: services.get_required(),
             song_events,
@@ -611,6 +656,17 @@ impl Scene for SongSelectScene {
         profile_function!();
         if self.suspended.load(std::sync::atomic::Ordering::Relaxed) {
             return Ok(());
+        }
+        // The "Song Provider" tab reports the list the player picked; re-enter
+        // the screen with it, which rebuilds the provider, the filters and the
+        // wheels for the other catalogue.
+        while let Ok(provider) = self.provider_switch_rx.try_recv() {
+            if let Some(pc) = &self.program_control {
+                // The tab is a preference, not a one-off, so it is written to
+                // the config before the screen reloads with it.
+                self.async_worker.read().expect("Lock error").save_config();
+                let _ = pc.send(ControlMessage::SongSelect(provider));
+            }
         }
         let song_advance_steps = (self.song_advance / KNOB_NAV_THRESHOLD).trunc() as i32;
         self.song_advance -= song_advance_steps as f32 * KNOB_NAV_THRESHOLD;

@@ -1,0 +1,343 @@
+# kson-rs iPadOS 移植与更改记录
+
+- 仓库：`123xzxc/kson-rs`（`Drewol/kson-rs` 的 fork，PUBLIC）
+- 移植分支：`feat/ipados-port`（本地分支 `codex/ipados-port`）
+- 路线：**路线 A** —— 用 GitHub Actions 编译，产出无签名 IPA，LiveContainer 侧载
+- 目标系统：iPadOS / iOS 15.0+（`TARGETED_DEVICE_FAMILY = 2`）
+- 本文档对应当前分支状态（`25098aa` 之后加入了歌曲来源切换）
+
+---
+
+## 1. 背景与目标
+
+上游 `kson-rs` 是一个用 Rust 写的 SDVX（Sound Voltex）类音游，原本只有桌面端
+（winit + femtovg/OpenGL + gilrs）。目标是把它移植到 iPadOS：
+
+1. 不改动游戏逻辑，尽量把平台相关代码收敛到新的 `game/src/platform/` 下。
+2. 复用已有的 Lua 皮肤系统（`game/skins/Default`），让菜单、选曲、设置全部走原皮肤。
+3. 在没有 macOS 的环境下开发：Rust 侧可本地交叉 `cargo check`，ObjC/Xcode 侧只能靠 CI。
+4. 用 GitHub Actions 产出无签名 IPA，不依赖签名证书。
+
+---
+
+## 2. 总体架构
+
+### 2.1 组成
+
+| 层 | 位置 | 说明 |
+| --- | --- | --- |
+| ObjC 应用壳 | `ios/KsonGame/Classes/` | `UIApplication` + `UIView`，驱动 Rust 的 `init/frame/resize/touch` |
+| Rust 静态库 | `game/src/`（`crate-type = staticlib`） | 游戏本体，通过 `extern "C"` 入口暴露给 ObjC |
+| iOS 平台层 | `game/src/platform/` | 渲染、触摸、手柄、路径、时间等平台实现 |
+| 手柄桥 | `ios/KsonGame/Classes/KsonGamepad.m` | `GameController.framework` → Rust 手柄事件 |
+| gilrs 替身 | `ios/gilrs-stub/` | iOS 上没有 gilrs，提供一个同接口的 stub crate |
+| 工程生成 | `ios/project.yml` | XcodeGen 配置，CI 里生成 `KsonGame.xcodeproj` |
+| 皮肤 | `game/skins/Default/` | 原 Lua 皮肤，运行时从容器目录读取 |
+
+### 2.2 渲染
+
+- `game/src/platform/render.rs`：把 femtovg 指向 EAGL 的 framebuffer，并补上
+  depth/stencil attachment；`framebuffer 0` 被重定向到 drawable。
+- `game/src/platform/app.rs`：主循环。每帧
+  `game.update()` → `flush_pending_touches()` → `render_ios()`（皮肤 canvas + 虚拟控制器 overlay）
+  → `egui_host` 画设置界面 → 呈现。
+- `game/src/egui_host.rs`：iOS 上的 egui 用 `egui_glow` 画（桌面的 `egui-winit` 不可用）。
+- 所有 GL 错误带阶段名上报（`render.rs` 的 `drain_error`），例如
+  `frame N: gl error 0x500 at stage \`frame-start\``。
+
+### 2.3 输入路由
+
+```
+UIKit 触摸 ──► kson_ios_touch ──► IosApp::route_touch
+                                    ├─ egui 界面（设置）        → egui 事件
+                                    ├─ 菜单场景（touch_as_mouse）→ 合成鼠标事件 + 拖动转旋钮
+                                    └─ 游戏内                   → 原始触摸网格（激光手势）
+物理手柄 ──► GameController ──► kson_ios_gamepad_* ──► GamepadEvent 队列 ──► drain() ──► Laser/Button 事件
+虚拟面板 ──► IosTouchState::update ──► Laser/Button 事件（同上）
+```
+
+关键点：
+
+- **皮肤菜单需要鼠标事件**（悬停、点击），所以 iOS 触摸会被合成成
+  `CursorMoved` / `MouseInput` 再喂给皮肤。
+- **触摸坐标要换算成渲染像素**（`game_main` 里的缩放），否则皮肤命中区全部错位。
+- **游戏内**才用原始触摸网格，拖动即激光。
+
+---
+
+## 3. 构建与发布
+
+### 3.1 GitHub Actions
+
+工作流：`.github/workflows/ios.yml`（单 job `build`，只监听 `master` / `feat/**`）。
+
+流程：`cargo rustc --release --target aarch64-apple-ios --crate-type staticlib`
+→ XcodeGen 生成工程 → `xcodebuild` 出 `.app` → 打包成无签名 `.ipa` → 上传 artifact `USC-ios-unsigned`。
+
+构建参数（见 `ios/project.yml` 的 preBuildScript）：
+
+```
+cargo rustc --release --target aarch64-apple-ios -p rusc --lib \
+  --crate-type staticlib \
+  --features embed-assets --no-default-features \
+  -- -C strip=debuginfo -C link-dead-code
+```
+
+- `--no-default-features`：把桌面专用的 SoundTouch（C++）排除掉。
+- `embed-assets`：把 `skins/`、`fonts/` 打进二进制，首次启动解包到容器目录。
+- `-C strip=debuginfo` + `-C link-dead-code`：保留符号表，让强制加载符号生效。
+
+### 3.2 链接注意事项（踩过的坑）
+
+Rust 静态库里的入口函数不会被 ObjC 全部引用，链接器默认会丢弃。因此：
+
+1. `game/src/lib.rs` 顶层有 `mod ios_exports`，**每个 FFI 入口都要在这里再导出一次**，
+   否则静态库里没有该符号。
+2. `ios/project.yml` 里 **两处**都要加 `-u _kson_ios_xxx`：
+   `FORCE_LOAD_SYMBOLS` 和 `KsonGame` target 的 `OTHER_LDFLAGS`。
+3. `librusc.a` 在 `OTHER_LDFLAGS` 里显式列出，只写 `-lrusc` 会在库搜索路径未就绪时被静默丢弃。
+
+当前入口：
+
+```
+kson_ios_init / kson_ios_frame / kson_ios_resize / kson_ios_touch
+kson_ios_gamepad_button / kson_ios_gamepad_axis / kson_ios_set_controllers
+kson_ios_capture_gamepad_button / kson_ios_capture_gamepad_axis
+kson_ios_axis_binding / kson_ios_knob_axis
+```
+
+### 3.3 本地可做的检查（Windows，无 macOS）
+
+```powershell
+# iOS 交叉 check（zig shim 提供 clang/ar）
+$shim = "<repo>\target\zig-shim"
+$env:Path = "$shim;$env:USERPROFILE\.cargo\bin;$env:Path"
+$env:CC_aarch64_apple_ios="$shim\clang.bat"; $env:CXX_aarch64_apple_ios="$shim\clang.bat"
+$env:AR_aarch64_apple_ios="$shim\ar.bat"; $env:SDKROOT="$shim\sdkroot"
+$env:IPHONEOS_DEPLOYMENT_TARGET="15.0"
+cargo check -p rusc --lib --no-default-features --target aarch64-apple-ios `
+  --features embed-assets --message-format short
+
+# 桌面 check（保证没有破坏原有平台）
+cargo check -p rusc --lib --no-default-features --message-format short
+```
+
+ObjC 侧无法本地编译，只能靠 CI 验证。
+
+---
+
+## 4. 更改记录
+
+### 4.1 启动与崩溃
+
+| 提交 | 问题 | 修复 |
+| --- | --- | --- |
+| `acae2e8` | 首次启动闪退 | 解包 `embed-assets`；缺字体不再 panic |
+| `3c1ef7e` | 服务注册与沙盒路径错误 | 修正 iOS 的服务注册、`Documents/USC` 路径解析 |
+| `18d8acd` | 呈现时 GL 报错 | 呈现前绑定 drawable renderbuffer |
+| `be50050` | canvas 服务缺失 | 重新注册裸 canvas 服务 |
+| `b74a8b9` | 启动进错场景 | 直接进标题界面，并打上歌曲启动日志 |
+| `3818dbc` | 全新安装时配置存不下来 | 保存配置时先建目录 |
+| `2e68ab7` | egui 输入无效 | iOS 的 egui 事件之前根本没进 context |
+| `5875835` | Get Songs 闪退 | jacket 图改走 async runtime；Lua `print` 转发；`LuaHttp` 回调日志 |
+
+### 4.2 渲染
+
+| 提交 | 说明 |
+| --- | --- |
+| `be11d94` | 通过 `OpenGLES.framework` 解析 GLES 入口 |
+| `2748d13` | 把 framebuffer 0 重定向到 EAGL drawable，修正 layer scale |
+| `5aab07a` | femtovg 指向 EAGL framebuffer，并补 depth/stencil |
+| `18c78d7` | 使用 core ES3 的 depth/stencil 枚举 |
+| `0b05998` / `18d8acd` | 从呈现侧重新绑定 drawable framebuffer |
+| `1387b11` | GL 错误带阶段名，便于定位 |
+| `47b387b` | egui 界面改用 `egui_glow` 绘制 |
+
+已知残留（无害，未处理）：皮肤背景 shader 的 GLSL ES 3.0 编译失败（只影响背景层）、
+偶发 `gl error 0x500` / `egui_glow` `GL_INVALID_OPERATION 0x502`。
+
+### 4.3 触摸
+
+| 提交 | 问题 | 修复 |
+| --- | --- | --- |
+| `69f9d2d` | 菜单点不动 | iOS 菜单触摸合成为鼠标事件；拖动转成旋钮 |
+| `21b9bfb` | 命中区错位 | 触摸坐标换算成渲染像素 |
+| `04836d6` | 皮肤菜单看不到 hover | 延迟投递 iOS 触摸，先给皮肤 hover |
+| `ab61bd0` | 面板位置/大小/旋转错误 | 修正布局与旋转重算 |
+| `2e68ab7` | egui 输入丢失 | 事件送达 context |
+| `29f15d4` | 菜单上按键可见但点不动 | 触摸先判定「按面板」还是「拖菜单」，整个手指生命周期内保持一致 |
+| `29f15d4` | 标题界面被面板挡住 | 主菜单自动隐藏面板（含左上角切换钮） |
+
+### 4.4 虚拟控制器（屏幕面板）
+
+| 提交 | 说明 |
+| --- | --- |
+| `5416dd4` | 加入可隐藏的虚拟按键层 |
+| `998d107` | 按 SDVX 控制器风格排版 |
+| `d0dc84c` | 放大面板 |
+| `ab61bd0` | 修正位置、尺寸、旋转、旋钮 |
+| `29f15d4` | BT 键加大、FX 条下移放大、BT 加 A/B/C/D 字母、FX 加方向箭头 |
+| `29f15d4` | 主菜单自动隐藏；设置里可手动隐藏 |
+
+布局参数在 `game/src/touch.rs::TouchHelper::new`，绘制在 `game/src/platform/input.rs`
+（`paint_overlay` / `paint_toggle` / `pentagon`）。
+
+### 4.5 手柄 / 手台（PHAC）
+
+用户使用的是 PHAC 自制手台：**旋钮模拟左摇杆 X/Y，腰杆不回中，无右摇杆**。
+
+| 提交 | 问题 | 修复 |
+| --- | --- | --- |
+| `5416dd4` | 无手柄支持 | 接入 `GameController.framework` |
+| `d3bf1fa` | 手柄按键无法配置 | 打通控制器绑定界面 |
+| `b2ff0cd` / `fa07036` | 新入口没被链接 | 强制加载 + 从 crate root 再导出 |
+| `45e4352` | 旋钮在游戏内无效 | 修绑定查找与输入路径 |
+| `5f5f473` | 旋钮游戏内可用 | 绑定持久化到配置 |
+| `0c1c7c3` | 轴与 PHAC 不一致 | 按固件（左摇杆 X=左旋钮、Y=右旋钮）修正 |
+| `2699225` | 载入到旧的坏绑定 | 换持久化 key；恢复轴灵敏度 |
+| `21ca37b` | 旋钮又不动了 | 每个事件重置 delta，避免累加把激光顶死 |
+| `0e61ea9` | 方向反、太灵敏 | 翻转实体旋钮方向并降低灵敏度 |
+| `6d5a07f` | 灵敏度不可调 | 设置里加 Knob sensitivity（0.05–3.0） |
+| `29f15d4` | **一个旋钮同时带动左右两边激光** | 见下方「轴捕获」 |
+
+#### 轴捕获（`29f15d4`）
+
+现象：打歌时转手台旋钮，**左右两条激光一起动**；设置里左右旋钮、甚至 Back 都显示 `axis 1`。
+
+根因：`KsonGamepad.m` 的 `captureAxes` 在**每次轴事件**里按固定顺序把四个轴全部报给设置界面，
+第一个 `LeftY` 永远先命中，于是所有绑定都写成 `axis 1` → 两个旋钮同轴。
+
+修复：
+
+- 只上报**真正位移的轴**（阈值 0.02），斜推时取位移更大的那个。
+- 忽略主机把左摇杆值镜像上报成右摇杆的情况。
+- 加载/写入绑定时，若两个旋钮指向同一轴，自动清掉其中一个（回落默认 X/Y）。
+- 绑定 key 换新（`...6403`），旧的坏绑定直接作废。
+
+### 4.6 Get Songs / 谱面
+
+| 提交 | 问题 | 修复 |
+| --- | --- | --- |
+| `ba18f48` | 主菜单 Downloads 打不开 | 新增 `game/src/download_screen.rs` + 皮肤 `downloadscreen.lua` |
+| `5e38479` | 皮肤用 `Http.GetAsync` 但全局名是 `http` | 注册 `Http` 别名 |
+| `45e4352` | Get Songs 闪退 | 修 Lua 服务与 jacket 加载 |
+| `6d5a07f` | 卡在 LOADING | 修 HTTP 轮询 |
+| `5875835` | 进得去但下载闪退 | jacket 改 async runtime；Lua 错误上报 |
+| `29f15d4` | 界面无法操作 | 下载界面把鼠标按压转发给脚本：点条目选中，再点一次下载 |
+| `25098aa` | **点 Start / 双击谱面不下载** | 见下方「dlScreen 绑定」 |
+| `25098aa` | **旋钮无极、定不到谱面上** | 见下方「旋钮步进」 |
+| `25098aa` | 谱面目录找不到 | 启动日志打印目录与条目数，并写入 `PUT_CHARTS_HERE.txt` 标记 |
+
+#### dlScreen 绑定（`25098aa`）
+
+现象：报错 `bad argument #1 to DlScreenLua.DownloadArchive: error converting Lua string to
+userdata`，Start 和双击都不下载。
+
+根因：`dlScreen` 用 `UserData::add_function` 注册，函数签名第一个参数是 `this: AnyUserData`，
+需要 `dlScreen:DownloadArchive(...)` 调用；但皮肤（和上游一致）写的是 `dlScreen.DownloadArchive(...)`，
+于是 URL 被当成 `this`，参数整体错位一位。
+
+修复：把 `dlScreen` 从「带方法的 userdata」改成**普通 table + 闭包**，
+状态（channel、路径、mixer）在注册时被闭包捕获，调用风格与 `Http.GetAsync` 一致（`.`）。
+
+#### 旋钮步进（`25098aa`）
+
+现象：Get Songs 里旋钮是「无极」的，高亮一直在滑，**永远停不到某一张谱面上**。
+
+根因：`tick` 把旋钮的**原始模拟增量**（一个 detent 的零头）直接传给 Lua 的
+`advance_selection(steps)`，`cursorPos = (cursorPos + steps) % #songs` 因此停在分数索引上。
+
+修复：在 Rust 侧累加，**每满 3 个 detent 才走一格**，余数留到下一帧；
+阈值按 `knob_sensitivity` 归一化，所以灵敏度设置不会改变「几格一步」。
+
+#### 谱面目录
+
+游戏读取的目录是 `<NSHomeDirectory()>/Documents/USC/songs`，由
+`GameConfig::songs_path`（默认 `./songs`）相对 `game_folder` 解析而来。
+
+导入器（`game/src/song_provider/files.rs`）会**递归**扫描该目录，任何包含
+`.ksh` / `.kson` 的文件夹都算一首歌；Get Songs 下载的谱面解包到
+`songs/nautica/<id>/`，因此也会被扫到。
+
+> LiveContainer 下这个路径是多层 UUID 嵌套，例如：
+> `/var/mobile/Containers/Data/Application/<A>/Documents/Data/Application/<B>/Documents/USC/songs`。
+> 启动日志会打印 `Charts folder: <路径> (N entries)`，N 就是该目录里的条目数。
+
+#### 歌曲来源切换（本地 / 在线）
+
+「开始游戏」一次只列一个来源，所以选曲界面的设置对话框里加了一个 **Song Provider** 标签页
+（和偏移、判定设置放在一起，双 FX 键打开）：
+
+| 选项 | 内容 |
+| --- | --- |
+| `Local Files` | `songs_path`（默认 `Documents/USC/songs`）里的谱面，含 Get Songs 下载的 |
+| `Nautica (Online)` | ksm.dev 的在线目录 |
+
+选择写进 `GameConfig::song_select.provider`，重启后仍然生效，主菜单按它决定初始列表。
+
+实现要点：
+
+- 设置对话框在场景拿到 `program_control` **之前**就建好了，所以标签页先通过自己的 channel
+  上报选择，由 `SongSelectScene::tick` 转发成 `ControlMessage::SongSelect`。
+- 该消息原来用 `Scenes::suspend_top()`，会把旧选曲界面留在场景栈里（每切一次多一层，
+  Back 会一层层退回历史列表）。现在改成 `Scenes::pop_top()`，让界面**替换**自己。
+- `SettingsDialog::push_tab` 用来在对话框建好之后再追加标签页。
+
+### 4.7 配置持久化
+
+| 提交 | 说明 |
+| --- | --- |
+| `3818dbc` | 全新安装时保存配置不再失败 |
+| `2699225` | 换 iOS 手柄绑定的持久化 key，丢弃历史坏数据 |
+| `0e61ea9` / `6d5a07f` | 新增旋钮灵敏度、旋钮速度设置 |
+| `5f5f473` | 手柄绑定写回 `controller_binds`，随 `config.save()` 持久化 |
+
+### 4.8 其它
+
+- `2c47f78`：接受旧皮肤里的 `bitcrusher` 效果名。
+- `ae4c8ae`：修 nautica 的 Shift-JIS 谱面解析。
+- `91a06e5`：去掉 bundle 资源拷贝（`embed-assets` 已经带上）。
+- `f85dd9e`：iOS 分支不跑桌面的 installer matrix。
+
+---
+
+## 5. 产物与安装
+
+- 构建产物：artifact `USC-ios-unsigned`，仓库内归档在 `build-ipa/`
+  - `build-ipa/USC-unsigned.ipa`（最新）
+  - `build-ipa/USC-unsigned-<sha>.ipa`（按提交归档）
+- IPA **不入库**（`.gitignore` 忽略 `build-ipa/`、`*.ipa`）。
+- 安装：用 LiveContainer 侧载无签名 IPA。
+
+---
+
+## 6. 已知问题与待办
+
+- [x] **本地谱面无法从「开始游戏」进入**：设置对话框的 Song Provider 标签页可以切换，
+      选择持久化在 `GameConfig::song_select.provider`，主菜单按它决定初始列表。
+- [ ] 下载的谱面按 nautica UUID 建目录（`songs/nautica/<id>/`），不是按曲名。
+- [ ] 皮肤背景 shader 的 GLSL ES 3.0 编译失败（只影响背景层）。
+- [ ] 偶发 `gl error 0x500` / `egui_glow` `GL_INVALID_OPERATION 0x502`，目前无可见影响。
+- [ ] `tests::serializer::ksh_parser` 是上游就存在的失败用例。
+- [ ] `download_screen.rs::start_download` 仍是 `std::thread::spawn` + `reqwest::blocking`。
+
+---
+
+## 7. 关键文件索引
+
+| 文件 | 作用 |
+| --- | --- |
+| `ios/KsonGame/Classes/KsonGameView.m` | UIKit 视图、触摸、帧驱动 |
+| `ios/KsonGame/Classes/KsonGamepad.m` | `GameController` 桥、旋钮轴捕获 |
+| `ios/project.yml` | XcodeGen 工程、链接参数、构建脚本 |
+| `ios/gilrs-stub/` | iOS 上的 gilrs 替身 |
+| `game/src/platform/app.rs` | iOS 主循环、触摸路由 |
+| `game/src/platform/render.rs` | EAGL/femtovg 渲染 |
+| `game/src/platform/input.rs` | 虚拟面板绘制与命中 |
+| `game/src/platform/gamepad.rs` | 手柄事件队列、绑定、`drain` |
+| `game/src/platform/paths.rs` | 容器路径、资源解包、谱面目录 |
+| `game/src/touch.rs` | 触摸网格与虚拟按键布局 |
+| `game/src/download_screen.rs` | Get Songs 场景与 `dlScreen` 绑定 |
+| `game/src/game_main.rs` | 场景栈、输入分发、帧循环 |
+| `game/src/egui_host.rs` | iOS 的 egui 宿主 |
+| `ios/README.md` | iOS 构建与链接说明 |
