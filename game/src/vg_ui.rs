@@ -140,6 +140,9 @@ pub struct Vgfx {
     scoped_assets: HashMap<usize, ScopedAssets>,
     fonts: HashMap<String, FontId>,
     image_jobs: HashMap<String, Promise<image::DynamicImage>>,
+    /// Jacket art fetched over HTTP. Kept separate from `image_jobs` because
+    /// the key is a URL and the job blocks on a network request.
+    web_image_jobs: HashMap<String, Promise<image::DynamicImage>>,
     label_align: (femtovg::Align, femtovg::Baseline),
 }
 
@@ -230,6 +233,7 @@ impl Vgfx {
             next_paint_id: 1,
             next_label_id: 1,
             image_jobs: Default::default(),
+            web_image_jobs: Default::default(),
             scoped_assets: Default::default(),
             image_tint: None,
             label_color: Color::white(),
@@ -1464,16 +1468,90 @@ impl VgfxLua {
     }
 
     fn load_web_image_job(
-        _lua_index: &LuaKey,
+        lua_key: &LuaKey,
         _vgfx: &RefMut<Vgfx>,
-        _url: String,
-        _placeholder: i32,
-        _w: i32,
-        _h: i32,
-    ) -> mlua::Result<()> {
+        url: String,
+        placeholder: u32,
+        w: Option<u32>,
+        h: Option<u32>,
+    ) -> mlua::Result<u32> {
         let mut _vgfx_lock = _vgfx.write().expect("Lock error");
         let _vgfx = _vgfx_lock.deref_mut();
-        unimplemented()
+        if let Some((key, job)) = _vgfx.web_image_jobs.remove_entry(&url) {
+            match job.try_take() {
+                Ok(img) if img.width() > 0 => {
+                    let img_id = _vgfx.with_canvas(|c| {
+                        c.create_image(
+                            femtovg::ImageSource::try_from(&img).map_err(mlua::Error::external)?,
+                            ImageFlags::empty(),
+                        )
+                        .map_err(mlua::Error::external)
+                    })??;
+
+                    _vgfx
+                        .scoped_assets
+                        .get_mut(&lua_key.key())
+                        .ok_or(mlua::Error::external("Assets not initialized"))?
+                        .images
+                        .insert(_vgfx.next_img_id, VgImage::Static(img_id));
+                    _vgfx
+                        .scoped_assets
+                        .get_mut(&lua_key.key())
+                        .ok_or(mlua::Error::external("Assets not initialized"))?
+                        .job_imgs
+                        .insert(key, _vgfx.next_img_id);
+                    _vgfx.next_img_id += 1;
+                }
+                Ok(_) => {}
+                Err(job) => {
+                    _vgfx.web_image_jobs.insert(key, job);
+                }
+            }
+        }
+
+        let key = url.clone();
+        if !_vgfx.scoped_assets[&lua_key.key()]
+            .job_imgs
+            .contains_key(&url)
+        {
+            _vgfx
+                .web_image_jobs
+                .entry(url.clone())
+                .or_insert_with(move || {
+                    Promise::spawn_thread("load web image", move || {
+                        let result = reqwest::blocking::get(&key)
+                            .and_then(|r| r.bytes())
+                            .map_err(|e| anyhow!("{e}"))
+                            .and_then(|b| {
+                                image::load_from_memory(&b).map_err(|e| anyhow!("{e}"))
+                            });
+                        match result {
+                            Ok(img) => {
+                                if let (Some(w), Some(h)) = (w, h) {
+                                    img.resize(w, h, image::imageops::FilterType::CatmullRom)
+                                } else {
+                                    img
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!("Failed to fetch jacket {key}: {e:#}");
+                                image::DynamicImage::default()
+                            }
+                        }
+                    })
+                });
+            _vgfx
+                .scoped_assets
+                .get_mut(&lua_key.key())
+                .ok_or(mlua::Error::external("Assets not initialized"))?
+                .job_imgs
+                .insert(url.clone(), placeholder);
+        }
+
+        Ok(*_vgfx.scoped_assets[&lua_key.key()]
+            .job_imgs
+            .get(&url)
+            .unwrap_or(&placeholder))
     }
 
     fn scissor(

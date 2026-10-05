@@ -52,6 +52,7 @@ use crate::{
     lua_http::LuaHttp,
     lua_service::LuaProvider,
     main_menu::MainMenuButton,
+    download_screen::DownloadScreen,
     settings_screen::SettingsScreen,
     song_provider, songselect,
     transition::Transition,
@@ -390,7 +391,9 @@ impl GameMain {
                         )
                         .ok();
                     }
-                    MainMenuButton::Downloads => {}
+                    MainMenuButton::Downloads => scenes.loaded.push(Box::new(
+                        DownloadScreen::new(service_provider.create_scope()),
+                    )),
                     MainMenuButton::Exit => {
                         scenes.clear();
                     }
@@ -1142,7 +1145,9 @@ impl GameMain {
                         )
                         .ok();
                     }
-                    MainMenuButton::Downloads => {}
+                    MainMenuButton::Downloads => scenes.loaded.push(Box::new(
+                        DownloadScreen::new(service_provider.create_scope()),
+                    )),
                     MainMenuButton::Exit => scenes.clear(),
                     MainMenuButton::Options => scenes.loaded.push(Box::new(SettingsScreen::new_with_monitors(
                         service_provider.create_scope(),

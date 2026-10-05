@@ -5,6 +5,7 @@ mod audio_test;
 mod button_codes;
 mod companion_interface;
 mod config;
+mod download_screen;
 mod game;
 mod game_data;
 mod game_main;
