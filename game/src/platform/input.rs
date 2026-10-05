@@ -469,7 +469,7 @@ impl IosTouchState {
         let side = match phase {
             TouchPhase::Began => {
                 let point = Pos2::new(x as f32, y as f32);
-                self.helper.areas().iter().find_map(|(button, area)| {
+                let hit = self.helper.areas().iter().find_map(|(button, area)| {
                     if !area.contains(point) {
                         return None;
                     }
@@ -477,7 +477,17 @@ impl IosTouchState {
                         UscButton::Laser(side, _) => Some(*side),
                         _ => None,
                     }
-                })
+                });
+                // Diagnostic: the knob hit areas are small rings on the outer
+                // edges, and a touch that misses them silently falls through to
+                // the button grid. Log both so a "knob does nothing" report can
+                // be told apart from a missed hit.
+                log::info!(
+                    "laser drag began at ({x:.0},{y:.0}) size=({:.0},{:.0}) hit={hit:?}",
+                    self.width,
+                    self.height
+                );
+                hit
             }
             _ => self.laser_drags.get(&id).map(|(side, _)| *side),
         };

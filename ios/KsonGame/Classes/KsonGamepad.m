@@ -229,11 +229,22 @@ static const float KsonStickDeadzone = 0.12f;
 ///
 /// Returns true when any of them completed a binding.
 + (BOOL)captureAxes {
-    BOOL captured = kson_ios_capture_gamepad_axis(KsonGamepadAxisLeftY);
-    captured = kson_ios_capture_gamepad_axis(KsonGamepadAxisLeftX) || captured;
-    captured = kson_ios_capture_gamepad_axis(KsonGamepadAxisRightY) || captured;
-    captured = kson_ios_capture_gamepad_axis(KsonGamepadAxisRightX) || captured;
-    return captured;
+    // Stop at the first axis that moved: otherwise a single stick push is
+    // recorded for all four axes, which is why every laser quadrant ended up
+    // bound to "axis 1".
+    if (kson_ios_capture_gamepad_axis(KsonGamepadAxisLeftY)) {
+        return YES;
+    }
+    if (kson_ios_capture_gamepad_axis(KsonGamepadAxisLeftX)) {
+        return YES;
+    }
+    if (kson_ios_capture_gamepad_axis(KsonGamepadAxisRightY)) {
+        return YES;
+    }
+    if (kson_ios_capture_gamepad_axis(KsonGamepadAxisRightX)) {
+        return YES;
+    }
+    return NO;
 }
 
 + (void)attachBasicGamepad:(GCGamepad *)pad {

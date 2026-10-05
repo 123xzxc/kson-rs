@@ -258,11 +258,18 @@ pub fn axis_for_knob(side: Side) -> i32 {
     let Ok(bindings) = bindings().lock() else {
         return -1;
     };
-    bindings
-        .get(&UscButton::Laser(side, Side::Left))
-        .filter(|binding| binding.kind == BindingKind::Axis)
-        .map(|binding| binding.index)
-        .unwrap_or(-1)
+    // A knob is exposed as two laser quadrants (`Laser(side, Left)` and
+    // `Laser(side, Right)`), and the settings screen binds each of them
+    // separately. Accept whichever of the two the player actually bound so a
+    // single captured stick axis reaches the knob.
+    for direction in [Side::Left, Side::Right] {
+        if let Some(binding) = bindings.get(&UscButton::Laser(side, direction)) {
+            if binding.kind == BindingKind::Axis {
+                return binding.index;
+            }
+        }
+    }
+    -1
 }
 
 /// The raw index of a `UscButton`, matching `GamepadButton::from_raw`.
@@ -301,6 +308,10 @@ pub fn push_button(raw_button: i32, pressed: bool) {
 /// the physical stick onto them so only the left stick is used: its vertical
 /// axis turns the left knob and its horizontal axis turns the right one.
 pub fn push_axis(knob: i32, value: f32) {
+    // Diagnostic: a physical controller (especially an arcade hand controller)
+    // may report its knobs on an axis the bridge never forwards, so log every
+    // deflection that actually reaches the game.
+    log::info!("gamepad axis knob={knob} value={value:.3}");
     let side = if knob == 0 { Side::Left } else { Side::Right };
     if let Ok(mut q) = queue().lock() {
         q.push_back(GamepadEvent::Axis(side, value, now()));

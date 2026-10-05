@@ -188,21 +188,28 @@ impl UserData for ExportLuaHttp {
                     http.calls
                         .push(poll_promise::Promise::spawn_async(async move {
                             let client = match reqwest::Client::builder()
-                                .default_headers(HeaderMap::from_iter(headers.iter().map(
+                                .default_headers(HeaderMap::from_iter(headers.iter().filter_map(
                                     |(name, value)| {
-                                        (
-                                            name.parse()
-                                                .inspect_err(|e| log::warn!("{e}"))
-                                                .unwrap_or(HeaderName::from_static(
-                                                    "Bad header name",
-                                                )),
-                                            value
-                                                .parse()
-                                                .inspect_err(|e| log::warn!("{e}"))
-                                                .unwrap_or(HeaderValue::from_static(
-                                                    "Bad header value",
-                                                )),
-                                        )
+                                        // A malformed header must not take the
+                                        // whole app down: `HeaderName::from_static`
+                                        // aborts the process on invalid bytes, and
+                                        // skins are free to pass anything. Drop the
+                                        // entry and keep the request going.
+                                        let name: HeaderName = match name.parse() {
+                                            Ok(name) => name,
+                                            Err(e) => {
+                                                log::warn!("Skipping header {name:?}: {e}");
+                                                return None;
+                                            }
+                                        };
+                                        let value: HeaderValue = match value.parse() {
+                                            Ok(value) => value,
+                                            Err(e) => {
+                                                log::warn!("Skipping header {name:?}: {e}");
+                                                return None;
+                                            }
+                                        };
+                                        Some((name, value))
                                     },
                                 )))
                                 .build()
@@ -253,21 +260,23 @@ impl UserData for ExportLuaHttp {
                     http.calls
                         .push(poll_promise::Promise::spawn_async(async move {
                             let client = match reqwest::Client::builder()
-                                .default_headers(HeaderMap::from_iter(headers.iter().map(
+                                .default_headers(HeaderMap::from_iter(headers.iter().filter_map(
                                     |(name, value)| {
-                                        (
-                                            name.parse()
-                                                .inspect_err(|e| log::warn!("{e}"))
-                                                .unwrap_or(HeaderName::from_static(
-                                                    "Bad header name",
-                                                )),
-                                            value
-                                                .parse()
-                                                .inspect_err(|e| log::warn!("{e}"))
-                                                .unwrap_or(HeaderValue::from_static(
-                                                    "Bad header value",
-                                                )),
-                                        )
+                                        let name: HeaderName = match name.parse() {
+                                            Ok(name) => name,
+                                            Err(e) => {
+                                                log::warn!("Skipping header {name:?}: {e}");
+                                                return None;
+                                            }
+                                        };
+                                        let value: HeaderValue = match value.parse() {
+                                            Ok(value) => value,
+                                            Err(e) => {
+                                                log::warn!("Skipping header {name:?}: {e}");
+                                                return None;
+                                            }
+                                        };
+                                        Some((name, value))
                                     },
                                 )))
                                 .build()
