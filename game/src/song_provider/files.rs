@@ -246,12 +246,25 @@ async fn files_worker(
 }
 
 async fn load_db(database: &LocalSongsDb, worker_tx: &Sender<WorkerEvent>) {
+    let all_songs = songs_from_db(database).await;
+    info!("Loaded {} songs from db", all_songs.len());
+    worker_tx.send(WorkerEvent::SongProvider(SongProviderEvent::SongsAdded(
+        all_songs,
+    )));
+}
+
+/// Reads every chart in the database and groups its rows into songs.
+///
+/// `load_db` pushes the result over the event bus and `get_all` calls it
+/// directly, so a screen built before the worker has drained its first
+/// `LoadDb` still sees the library instead of an empty list.
+async fn songs_from_db(database: &LocalSongsDb) -> Vec<Arc<Song>> {
     let mut diffs = database
         .get_songs()
         .await
         .expect("Failed to load songs from database");
     let mut difficulty_id_path_map: HashMap<u64, PathBuf> = HashMap::default();
-    let mut all_songs: Vec<_> = diffs
+    let all_songs: Vec<_> = diffs
         .drain(0..)
         .into_grouping_map_by(|x| x.folderid)
         .fold(Song::default(), |mut song, id, diff| {
@@ -284,10 +297,7 @@ async fn load_db(database: &LocalSongsDb, worker_tx: &Sender<WorkerEvent>) {
         .drain()
         .map(|(_, song)| Arc::new(song))
         .collect();
-    info!("Loaded {} songs from db", all_songs.len());
-    worker_tx.send(WorkerEvent::SongProvider(SongProviderEvent::SongsAdded(
-        all_songs,
-    )));
+    all_songs
 }
 
 async fn refresh_songs(
@@ -679,7 +689,17 @@ impl SongProvider for FileSongProvider {
             self.sort,
         ))
         .unwrap_or_default();
-        (self.all_songs.values().cloned().collect_vec(), order)
+        if !self.all_songs.is_empty() {
+            return (self.all_songs.values().cloned().collect_vec(), order);
+        }
+        // The cache is filled by `update`, which only runs once the game loop
+        // has started - but the song select is built before the first frame
+        // when the game boots straight into it. Read the database instead of
+        // handing back an empty library, otherwise the screen lists the right
+        // order with no songs behind it and never recovers: the worker only
+        // broadcasts songs it has not sent before.
+        let songs = block_on(songs_from_db(&self.database));
+        (songs, order)
     }
 
     fn add_score(&self, id: SongDiffId, score: Score) {

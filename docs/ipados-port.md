@@ -255,6 +255,9 @@ knob Right axis=-0.3935 step=-0.2942 other=0.4524
 | 本次 | **每下载一次都会刷新下载界面** | 见下方「下载后不再重建 Lua」 |
 | 本次 | 下载界面没有返回键、其他虚拟键点了没反应 | 见下方「下载界面的触摸」 |
 | 本次 | 下载界面不能拖动翻页 | 见下方「下载界面的触摸」 |
+| 本次 | **滑动是「跳格」不是跟手** | 见下方「跟手翻页」 |
+| 本次 | **等级 / 排序没有触摸入口** | 见下方「等级 / 排序按钮」 |
+| 本次 | **切到本地列表不刷新** | 见下方「本地列表刷新」 |
 
 #### dlScreen 绑定（`25098aa`）
 
@@ -355,9 +358,66 @@ userdata`，Start 和双击都不下载。
   手柄的 `BUTTON_BCK` 复用同一个函数。
 * `DownloadScreen::on_event` 现在**把按压押后到抬手**再交给脚本：
   手势位移超过 `DRAG_TAP_SLOP`（14px）就算拖动，只翻页不选中；
-  否则按点击处理（选中 / 再点一次下载）。拖动每 `DRAG_POINTS_PER_ENTRY`（200px）
-  翻一格，取位移更大的那个轴，斜拖不会算两次。
+  否则按点击处理（选中 / 再点一次下载）。
 * `tick` 里翻页的旋钮增量改成**左右两个旋钮相加**，所以转哪边都能翻。
+
+##### 跟手翻页
+
+现象：拖动是「每 200px 硬跳一格」，不像手机那样跟着手指走。
+
+根因：`on_event` 自己攒位移、按固定像素折算成整数步，再把整数步交给 Lua，
+所以列表只能一格一格地跳，Lua 侧完全不知道手指在哪。
+
+修复：位移**原样转发**给脚本，几何计算交给脚本自己做（条目尺寸、列数都在那里）：
+
+* Rust 侧 `drag_begin` / `drag_moved(dx, dy)` / `drag_released` 三个新入口，
+  `DRAG_POINTS_PER_ENTRY` 和 `drag_progress` 删掉。
+* 抬手时**无条件**调用 `drag_released`：点击没有位移可结算，但脚本必须知道
+  手势结束了，否则下一帧还会按「正在拖动」处理。
+* 脚本里 `dragOffsetX/Y` 在按下期间逐帧累加到 `gfx.Translate` 上，网格就跟着手指走；
+  抬手时按 `entryW/entryH` 四舍五入成整数条目（`cursorPos`），**余数留在 offset 里**，
+  由 `render` 以 `deltaTime*12` 衰减到 0，于是列表是「滑到位」而不是「跳过去」。
+* 快速甩动额外多走最多 2 格（`dragLastX/Y / 60`），像手机的惯性；
+  上下不会拖出列表范围（`drag_moved` 里按 `yOffset` 夹住）。
+
+##### 等级 / 排序按钮
+
+现象：皮肤里 `screenState==1`（等级筛选）和 `==2`（排序）的实现一直是完整的，
+但只有手柄的 `BUTTON_FXL` / `BUTTON_FXR` 能进，触摸屏上没有入口。
+
+修复：把原来只画提示文字的 `render_hotkeys` 换成底部两个**可点按钮**
+（`filter_button_rect` / `sort_button_rect`，在 `resY-50-bottomButtonH-10`，
+避开左下角 Nautica 角和右下角 LOADING 角），标签实时显示当前值
+（`Levels: All` / `Levels: 3,15` / `Sort: Uploaded`）。
+
+* `mouse_pressed` 先判按钮（`screen_button_pressed`），开着面板时再点一次就关掉。
+* 面板里的条目在屏幕中线上，所以命中要求 `math.abs(mx - resX/2) <= 200`；
+  点在别处是关闭面板，不再顺手重发一次请求。
+* 旋钮在面板里改的是 `levelcursor` / `sortingcursor`（`advance_selection` 已有）。
+
+##### 本地列表刷新
+
+现象：切到 `Local Files` 时列表不刷新（空列表 / 还是上一次的内容）。
+
+根因有两处：
+
+1. `FileSongProvider::get_all` 返回的是 `all_songs` 缓存 + 数据库查出来的 `order`，
+   而缓存是 `update()` 填的 —— `update()` 只在游戏主循环里跑。iOS 是**直接进选曲界面**的
+   （启动即 `SongSelectScene::new`），此时缓存还是空的，于是 `order` 有 3 条、歌一首没有；
+   之后 worker 只会广播「没发过」的歌（`update` 去重），界面再也补不回来。
+2. 列表是按 provider 缓存建的，而 Get Songs 解包完谱面只是**请求重新扫描**，
+   导入在 worker 上异步跑，进来时可能还差一次扫描。
+
+修复：
+
+* `get_all` 在缓存为空时**直接读数据库**（`songs_from_db`，和 `load_db` 共用），
+  不再把空列表交给界面。
+* `SongSelectScene::new` 在来源是 `Files` 时 `refresh()` 一次，进来看到的
+  就是文件夹里真实的内容。
+* `SongCollection::append` 不再无条件 `order.push`：`add` 已经用数据库的
+  `order` 铺好了，provider 再报一次同一首会被列出两遍。
+* 新增日志 `Song select: <provider> provider, N songs, M in the order`，
+  下次日志能直接区分「查询为空」和「界面没画」。
 
 ### 4.7 配置持久化
 

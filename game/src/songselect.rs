@@ -24,7 +24,7 @@ use di::{RefMut, ServiceProvider};
 use itertools::Itertools;
 use kson::BtLane;
 use kson_rodio_sources::owned_source::{self, owned_source};
-use log::warn;
+use log::{info, warn};
 use mlua::{self, Function, Lua, LuaSerdeExt};
 use puffin::{profile_function, profile_scope};
 use rodio::{nz, Source};
@@ -77,7 +77,7 @@ pub struct Song {
     pub path: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub enum SongProviderSelection {
     Default,
     Files,
@@ -196,11 +196,24 @@ impl SongSelectScene {
         let score_events = score_provider.write().expect("Lock error").subscribe();
         let song_events = song_provider.write().expect("Lock error").subscribe();
         let (initial_songs, initial_order) = song_provider.write().expect("Lock error").get_all();
+        info!(
+            "Song select: {:?} provider, {} songs, {} in the order",
+            song_select.song_provider,
+            initial_songs.len(),
+            initial_order.len()
+        );
         _ = score_provider
             .write()
             .expect("Lock error")
             .init_scores(&mut initial_songs.iter());
         song_select.songs.add(initial_songs, initial_order);
+        // The list is built from the provider's cache, which can be one scan
+        // behind the folder: Get Songs unpacks a chart and only asks for a
+        // rescan, and the import runs on the worker. Rescan on the way in so
+        // the list is the folder the player has, not the last import.
+        if matches!(song_select.song_provider, SongProviderSelection::Files) {
+            song_provider.write().expect("Lock error").refresh();
+        }
         let (auto_tx, auto_rx) = mpsc::channel();
         // The screen can list either the charts on disk or the nautica
         // catalogue, and the settings dialog is the one place a touch screen can

@@ -249,8 +249,6 @@ pub struct DownloadScreen {
     pending_press: Option<i32>,
     /// Where the finger was at the previous move, while a drag is running.
     drag_origin: Option<(f64, f64)>,
-    /// Render pixels of travel the current drag has not spent on an entry yet.
-    drag_progress: f32,
     /// Set once a drag has moved far enough that it is no longer a tap.
     drag_moved: bool,
 }
@@ -264,12 +262,6 @@ const KNOB_DETENTS_PER_STEP: f32 = 3.0;
 
 /// How far a finger may travel before the gesture stops being a tap.
 const DRAG_TAP_SLOP: f64 = 14.0;
-
-/// How far a finger has to travel to move the selection by one entry.
-///
-/// The entries are 770 by 320 render pixels, so this is a comfortable swipe
-/// per entry without making the list fly past under the finger.
-const DRAG_POINTS_PER_ENTRY: f32 = 200.0;
 
 impl DownloadScreen {
     pub fn new(service_provider: ServiceProvider) -> Self {
@@ -309,7 +301,6 @@ impl DownloadScreen {
             knob_progress: 0.0,
             pending_press: None,
             drag_origin: None,
-            drag_progress: 0.0,
             drag_moved: false,
         }
     }
@@ -415,6 +406,32 @@ impl DownloadScreen {
             let _ = advance.call::<()>(steps);
         }
     }
+    /// Tells the script a swipe started, so it can drop any leftover offset.
+    fn call_drag_begin(&self) {
+        if let Ok(f) = self.lua.globals().get::<Function>("drag_begin") {
+            let _ = f.call::<()>(());
+        }
+    }
+    /// Hands the script one move of a swipe.
+    ///
+    /// The script owns the list geometry (entry size, columns), so the raw
+    /// pixel delta is forwarded and the list follows the finger. Rounding to
+    /// whole entries happens in `drag_released`, which is what makes the list
+    /// feel like a phone: it tracks the finger, then settles on the nearest
+    /// entry.
+    fn call_drag_moved(&self, dx: f64, dy: f64) {
+        if let Ok(f) = self.lua.globals().get::<Function>("drag_moved") {
+            if let Err(e) = f.call::<()>((dx, dy)) {
+                log::error!("{e}");
+            }
+        }
+    }
+    /// Tells the script the finger lifted, so it can snap and settle.
+    fn call_drag_released(&self) {
+        if let Ok(f) = self.lua.globals().get::<Function>("drag_released") {
+            let _ = f.call::<()>(());
+        }
+    }
 }
 /// Fetches the chart archive and unpacks it under `songs/nautica/<id>/`,
 /// returning the member names so the Lua callback can list what arrived.
@@ -513,14 +530,16 @@ impl Scene for DownloadScreen {
         render.call::<()>(dt / 1000.0)?;
         Ok(())
     }
-    /// Forwards taps to the script and turns swipes into paging.
+    /// Forwards taps to the script and hands swipes over as raw movement.
     ///
     /// iOS turns a touch into a synthetic mouse press, and the download screen
     /// has no keyboard for the hotkeys, so a tap is the only way to pick a song
     /// without the on-screen panel - and the panel is hidden here, which is why
-    /// the list also pages on a swipe. The press is held back until the finger
-    /// lifts so that a swipe does not select (or download) the entry it started
-    /// on.
+    /// the list also scrolls on a swipe. A swipe is forwarded move by move
+    /// (`drag_begin`/`drag_moved`/`drag_released`) so the list follows the
+    /// finger; the script snaps to the nearest entry when it lifts. The press is
+    /// held back until then so that a swipe does not select (or download) the
+    /// entry it started on.
     fn on_event(&mut self, event: &winit::event::Event<UscInputEvent>) {
         use winit::event::{ElementState, Event, MouseButton, WindowEvent};
         match event {
@@ -535,16 +554,7 @@ impl Scene for DownloadScreen {
                         self.drag_moved = true;
                     }
                     if self.drag_moved {
-                        // Whichever axis the finger travelled further along is
-                        // the one that moves the list, so a diagonal drag does
-                        // not count twice.
-                        let travel = if dx.abs() >= dy.abs() { dx } else { dy };
-                        self.drag_progress += travel as f32;
-                        let steps = (self.drag_progress / DRAG_POINTS_PER_ENTRY).trunc();
-                        if steps != 0.0 {
-                            self.drag_progress -= steps * DRAG_POINTS_PER_ENTRY;
-                            self.advance_selection(steps as i32);
-                        }
+                        self.call_drag_moved(dx, dy);
                     }
                 }
                 self.cursor = (position.x, position.y);
@@ -565,12 +575,17 @@ impl Scene for DownloadScreen {
                     ElementState::Pressed => {
                         self.pending_press = Some(code);
                         self.drag_origin = Some(self.cursor);
-                        self.drag_progress = 0.0;
                         self.drag_moved = false;
+                        self.call_drag_begin();
                     }
                     ElementState::Released => {
                         self.drag_origin = None;
                         let pressed = self.pending_press.take();
+                        // Always close the gesture: a tap leaves no offset to
+                        // settle, but the script still has to be told the finger
+                        // lifted or it would keep treating the next frame as a
+                        // swipe in progress.
+                        self.call_drag_released();
                         if !self.drag_moved {
                             if let Some(code) = pressed {
                                 self.call_mouse_pressed(code);
@@ -627,7 +642,6 @@ impl Scene for DownloadScreen {
         self.archive_rx = archive_rx;
         self.pending_press = None;
         self.drag_origin = None;
-        self.drag_progress = 0.0;
         self.drag_moved = false;
         Ok(())
     }

@@ -40,6 +40,15 @@ local sortingcursor = 0
 local sortingOptions = {"Uploaded", "Oldest"}
 local needsReload = false
 
+-- Follow-the-finger scrolling. `dragOffsetX/Y` is the pixel offset left over
+-- from the current swipe, `dragLastX/Y` the last move (used for the flick) and
+-- `dragging` keeps `render` from settling the offset while the finger is down.
+local dragOffsetX = 0
+local dragOffsetY = 0
+local dragLastX = 0
+local dragLastY = 0
+local dragging = false
+
 function addsong(song)
     -- Jacket art is fetched from `render_song` instead: asking for a whole
     -- page of jackets inside the HTTP callback killed the app, and one request
@@ -215,22 +224,70 @@ function render_loading()
     gfx.Restore()
 end
 
-function render_hotkeys()
+-- The pad's FX keys are the desktop way into the level and sorting pickers. A
+-- touch screen has no pad, so the same two pickers get their own buttons above
+-- the bottom bar (which the "Nautica" credit and the LOADING tag own).
+local bottomButtonH = 110
+
+local function button_row_y()
+    return resY - 50 - bottomButtonH - 10
+end
+
+function filter_button_rect()
+    return 20, button_row_y(), resX / 2 - 30, bottomButtonH
+end
+
+function sort_button_rect()
+    return resX / 2 + 10, button_row_y(), resX / 2 - 30, bottomButtonH
+end
+
+local function in_rect(x, y, w, h, mx, my)
+    return mx >= x and mx <= x + w and my >= y and my <= y + h
+end
+
+-- 1 = level filters, 2 = sorting, 0 = neither.
+function screen_button_pressed(mx, my)
+    local x, y, w, h = filter_button_rect()
+    if in_rect(x, y, w, h, mx, my) then return 1 end
+    x, y, w, h = sort_button_rect()
+    if in_rect(x, y, w, h, mx, my) then return 2 end
+    return 0
+end
+
+function level_filter_label()
+    local picked = {}
+    for i, on in ipairs(selectedLevels) do
+        if on then table.insert(picked, tostring(i)) end
+    end
+    if #picked == 0 then return "All" end
+    return table.concat(picked, ",")
+end
+
+local function draw_screen_button(x, y, w, h, label, active)
+    gfx.BeginPath()
+    gfx.RoundedRect(x, y, w, h, 18)
+    if active then
+        gfx.FillColor(255, 128, 0, 210)
+    else
+        gfx.FillColor(0, 0, 0, 190)
+    end
+    gfx.Fill()
+    gfx.StrokeColor(255, 255, 255, 220)
+    gfx.StrokeWidth(3)
+    gfx.Stroke()
+    gfx.FillColor(255, 255, 255)
+    gfx.TextAlign(gfx.TEXT_ALIGN_CENTER + gfx.TEXT_ALIGN_MIDDLE)
+    gfx.FontSize(44)
+    gfx.Text(label, x + w / 2, y + h / 2)
+end
+
+function render_screen_buttons()
     gfx.Save()
     gfx.ResetTransform()
-    gfx.BeginPath()
-    gfx.FillColor(0,0,0,240)
-    gfx.Rect(0,resY - 50, resX, 50)
-    gfx.Fill()
-    gfx.FontSize(30)
-    gfx.FillColor(255,255,255)
-    gfx.TextAlign(gfx.TEXT_ALIGN_LEFT, gfx.TEXT_ALIGN_BOTTOM)
-    gfx.Text("FXR: Sorting", resX/2 + 20, resY - 10)
-    gfx.TextAlign(gfx.TEXT_ALIGN_RIGHT, gfx.TEXT_ALIGN_BOTTOM)
-    gfx.Text("FXL: Levels", resX/2 - 20, resY - 10)
-    gfx.FontSize(24)
-    gfx.TextAlign(gfx.TEXT_ALIGN_LEFT, gfx.TEXT_ALIGN_BOTTOM)
-    gfx.Text("Tap: select / tap again: download / swipe: scroll", 10, resY - 10)
+    local x, y, w, h = filter_button_rect()
+    draw_screen_button(x, y, w, h, "Levels: " .. level_filter_label(), screenState == 1)
+    x, y, w, h = sort_button_rect()
+    draw_screen_button(x, y, w, h, "Sort: " .. tostring(selectedSorting), screenState == 2)
     gfx.Restore()
 end
 
@@ -321,7 +378,16 @@ function render(deltaTime)
     elseif displayCursorPosY - yOffset < 0 then
         yOffset = yOffset - (yOffset - displayCursorPosY)
     end
-    gfx.Translate(xOffset, 50 - yOffset * entryH)
+    if not dragging then
+        -- Settle whatever the last swipe left over, so the grid slides onto the
+        -- entry it snapped to instead of jumping there.
+        local settle = math.min(1, deltaTime * 12)
+        dragOffsetX = dragOffsetX - dragOffsetX * settle
+        dragOffsetY = dragOffsetY - dragOffsetY * settle
+        if math.abs(dragOffsetX) < 0.5 then dragOffsetX = 0 end
+        if math.abs(dragOffsetY) < 0.5 then dragOffsetY = 0 end
+    end
+    gfx.Translate(xOffset + dragOffsetX, 50 - yOffset * entryH + dragOffsetY)
     for i, song in ipairs(songs) do
         if math.abs(cursorPos - i) <= xCount * yCount + xCount then
             i = i - 1
@@ -336,7 +402,6 @@ function render(deltaTime)
     if screenState == 1 then render_level_filters()
     elseif screenState == 2 then render_sorting_selection()
     end
-    render_hotkeys()
     render_loading()
     render_info()
 
@@ -347,6 +412,7 @@ function render(deltaTime)
     --draw text search
     soffset = soffset * 0.8
     draw_search(fifthX*2,10, fifthX*3 + 30, fifthY/4)
+    render_screen_buttons()
     -- Drawn last: the search bar is painted over the whole top of the screen.
     render_back_button()
 end
@@ -507,23 +573,36 @@ function mouse_pressed(button, mx, my)
         exit_screen()
         return
     end
+    -- The two buttons toggle the pickers, and stay live while one is open so a
+    -- second tap closes it again.
+    local which = screen_button_pressed(mx, my)
+    if which == 1 then
+        screenState = (screenState == 1) and 0 or 1
+        return
+    elseif which == 2 then
+        screenState = (screenState == 2) and 0 or 2
+        return
+    end
+    -- The pickers list their entries down the middle of the screen, so a tap
+    -- has to land on that column to pick something; anywhere else closes them.
+    local on_list = math.abs(mx - resX / 2) <= 200
     if screenState == 1 then
         local index = math.floor((my - resY / 2) / 40 + 0.5) + levelcursor + 1
-        if index >= 1 and index <= 20 then
+        if on_list and index >= 1 and index <= 20 then
             selectedLevels[index] = not selectedLevels[index]
+            reload_songs()
         else
             screenState = 0
         end
-        reload_songs()
         return
     elseif screenState == 2 then
         local index = math.floor((my - resY / 2) / 40 + 0.5) + sortingcursor + 1
-        if sortingOptions[index] ~= nil then
+        if on_list and sortingOptions[index] ~= nil then
             selectedSorting = sortingOptions[index]
+            reload_songs()
         else
             screenState = 0
         end
-        reload_songs()
         return
     end
     if loading then return end
@@ -560,6 +639,63 @@ function advance_selection(steps)
         levelcursor = (levelcursor + steps) % 20
     elseif screenState == 2 then
         sortingcursor = (sortingcursor + steps) % #sortingOptions
+    end
+end
+
+-- Follow-the-finger scrolling, in the style of a phone list: the grid tracks
+-- the finger pixel for pixel while it is down, and when it lifts the nearest
+-- entry wins and whatever offset is left settles away in `render`.
+function drag_begin()
+    dragging = true
+    dragLastX, dragLastY = 0, 0
+    dragOffsetX, dragOffsetY = 0, 0
+end
+
+function drag_moved(dx, dy)
+    if screenState ~= 0 then return end
+    dragOffsetX = dragOffsetX + dx
+    dragOffsetY = dragOffsetY + dy
+    dragLastX, dragLastY = dx, dy
+    -- Never let the finger pull the window past the ends of the list: the top
+    -- visible row is `yOffset - dragOffsetY / entryH` and it has to stay
+    -- between 0 and the last row that still fills a screen.
+    local rows = math.ceil(#songs / xCount)
+    local maxRow = math.max(0, rows - yCount)
+    local top = yOffset - dragOffsetY / entryH
+    if top < 0 then
+        dragOffsetY = yOffset * entryH
+    elseif top > maxRow then
+        dragOffsetY = (yOffset - maxRow) * entryH
+    end
+end
+
+function drag_released()
+    dragging = false
+    if screenState ~= 0 then
+        dragOffsetX, dragOffsetY = 0, 0
+        return
+    end
+    -- A quick flick keeps going a little, the way a phone list does.
+    local flingX = math.max(-2, math.min(2, math.floor(-dragLastX / 60)))
+    local flingY = math.max(-2, math.min(2, math.floor(-dragLastY / 60)))
+    local stepsX = math.floor(-dragOffsetX / entryW + 0.5) + flingX
+    local stepsY = math.floor(-dragOffsetY / entryH + 0.5) + flingY
+    -- Keep only the sub-entry remainder so the settle animation has somewhere
+    -- to travel; the whole entries become a cursor move.
+    dragOffsetX = dragOffsetX + stepsX * entryW
+    dragOffsetY = dragOffsetY + stepsY * entryH
+    dragLastX, dragLastY = 0, 0
+    if #songs == 0 then return end
+    local total = stepsY * xCount + stepsX
+    if total == 0 then return end
+    local target = cursorPos + total
+    if target < 0 then target = 0 end
+    if target > #songs - 1 then target = #songs - 1 end
+    cursorPos = target
+    cursorPosX = cursorPos % xCount
+    cursorPosY = math.floor(cursorPos / xCount)
+    if cursorPos > #songs - 6 then
+        load_more()
     end
 end
 

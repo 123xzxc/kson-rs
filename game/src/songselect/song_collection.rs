@@ -33,8 +33,13 @@ impl SongCollection {
     }
     pub fn append(&mut self, mut songs: Vec<Arc<Song>>) {
         for song in songs.drain(..) {
-            self.order.push(song.id.clone());
-            self.songs.insert(song.id.clone(), song);
+            let id = song.id.clone();
+            self.songs.insert(id.clone(), song);
+            // `add` already seeded the order from the database, so a song the
+            // provider announces again must not be listed twice.
+            if !self.order.contains(&id) {
+                self.order.push(id);
+            }
         }
     }
     pub fn find_index(&self, id: &SongId) -> Option<usize> {
